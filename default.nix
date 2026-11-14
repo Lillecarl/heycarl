@@ -30,7 +30,7 @@ in
   default = kernel;
   nixosModule = ./nix/module.nix;
 
-  shell = pkgs.callPackage ./nix/shell.nix { inherit kernel; };
+  shell = pkgs.callPackage ./nix/shell.nix { inherit kernel frontend; };
   checks = pkgs.callPackages ./nix/checks.nix { inherit kernel frontend plugins; };
   formatter = pkgs.nixfmt-tree;
 }

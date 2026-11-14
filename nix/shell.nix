@@ -4,10 +4,14 @@
   postgresql,
   postgrest,
   kernel,
+  frontend,
 }:
 
 mkShell {
-  inputsFrom = [ kernel ];
+  inputsFrom = [
+    kernel
+    frontend
+  ];
   packages = [
     nixfmt
     postgresql
