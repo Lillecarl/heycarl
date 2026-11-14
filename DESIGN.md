@@ -161,6 +161,46 @@ the only Python is one job.
 - The page writes the browser's time zone to `preference`; dates and
   reminder times use it.
 
+## MCP (next)
+
+A Streamable HTTP MCP server at `/mcp`, for cloud AI clients (claude.ai
+custom connectors) and local agents. Decided:
+
+- Library: the official `mcp` SDK (nixpkgs 1.29.0, protocol 2025-11-25).
+  FastMCP for tools, resources, prompts and completions; the low-level
+  server where FastMCP lacks a feature (resource subscriptions, tasks).
+- Auth: the kernel is the OAuth 2.1 authorization server, with the SDK's
+  `create_auth_routes` and a provider that keeps clients, codes and tokens
+  in `heycarl_private`, tokens hashed. Dynamic client registration is on:
+  cloud clients need it. The issuer is the site root, so the endpoints are
+  `/authorize`, `/token`, `/register`, `/revoke` and
+  `/.well-known/oauth-authorization-server` and `-protected-resource`.
+  All but `/authorize` go on `access.py`'s public list; `/mcp` is bearer.
+- `/authorize` needs a session. `provider.authorize()` sees no request, so
+  it stores the pending request and redirects to a consent page. The page
+  shows the client's redirect host (open registration makes the name
+  attacker-chosen) and the scopes, and approves with a POST that mints the
+  code for the session's `sub`.
+- Scopes: `read` and `write`, chosen per client on the consent page. One
+  helper checks `write` for curated and generic tools alike. Destructive
+  tools confirm through elicitation and refuse when the client does not
+  support it. Sessions stay stateful: elicitation needs them.
+- Surface: each plugin registers tools, resources and prompts through
+  `ctx.mcp`, plus one generic PostgREST tool. A tool calls PostgREST as
+  `minter.user(token.subject)`, so RLS applies. Under `read`, the generic
+  tool allows GET and HEAD only.
+- Mounting: the SDK app's routes join the FastAPI router before the shell
+  catch-all, and the kernel lifespan enters `session_manager.run()`.
+  Pass `transport_security` explicitly: the default allows localhost only.
+- Tests: drive discovery, registration, authorize, token, initialize and a
+  tool call with elicitation through the SDK's own client against a real
+  uvicorn. After deploy: an unauthenticated `POST /mcp` answers 401 with
+  `WWW-Authenticate: ... resource_metadata`, and an event stream lives
+  past 30 seconds through Caddy.
+- Order: auth and transport end to end with one trivial tool, deployed
+  and probed; then `ctx.mcp`, the curated tools, resources and prompts;
+  the experimental features last.
+
 ## Open questions
 
 - Google OAuth apps in "testing" status may expire refresh tokens after
