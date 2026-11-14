@@ -16,11 +16,12 @@ from typing import TYPE_CHECKING
 
 import anyio
 import httpx
+import psycopg
 import pytest
-from heycarl import migrations, plugins
+from heycarl import migrations, plugins, sessions
+from heycarl.access import cookie_names
 from heycarl.app import Kernel, create_app
 from heycarl.config import Config
-from heycarl.identity import USER_HEADER
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 DATABASE = "heycarl"
+PUBLIC_URL = "https://hey.example.com"
 
 needs_database = pytest.mark.skipif(
     "PGHOST" not in os.environ or shutil.which("postgrest") is None,
@@ -51,9 +53,27 @@ def plugin_dirs() -> list[str]:
 
 
 @pytest.fixture
-def config(tmp_path: Path, plugin_dirs: list[str]) -> Config:
+def oidc_issuer() -> str:
+    # Never contacted: tests that sign in through a provider override this.
+    return "https://idp.invalid"
+
+
+@pytest.fixture
+def allowed_emails() -> frozenset[str]:
+    return frozenset()
+
+
+@pytest.fixture
+def config(
+    tmp_path: Path,
+    plugin_dirs: list[str],
+    oidc_issuer: str,
+    allowed_emails: frozenset[str],
+) -> Config:
     secret = tmp_path / "jwt-secret"
     secret.write_text(secrets.token_urlsafe(48))
+    client_secret = tmp_path / "oidc-client-secret"
+    client_secret.write_text("client-secret")
     plugins_file = tmp_path / "plugins.json"
     plugins_file.write_text(json.dumps(plugin_dirs))
     return Config(
@@ -63,7 +83,11 @@ def config(tmp_path: Path, plugin_dirs: list[str]) -> Config:
         plugins_file=plugins_file,
         static_dir=None,
         vapid_key_file=tmp_path / "state" / "vapid.pem",
-        public_url="https://hey.example.com",
+        public_url=PUBLIC_URL,
+        oidc_issuer=oidc_issuer,
+        oidc_client_id="hey",
+        oidc_client_secret_file=client_secret,
+        allowed_emails=allowed_emails,
     )
 
 
@@ -141,4 +165,17 @@ async def client(app: FastAPI, postgrest: None) -> AsyncIterator[httpx.AsyncClie
 
 
 def as_user(sub: str) -> dict[str, str]:
-    return {USER_HEADER: sub}
+    """Headers of a browser signed in as `sub`: a real session row and cookie.
+
+    Synchronous so tests can build headers inline; the app has migrated by
+    the time a test runs.
+    """
+    token = sessions.new_token()
+    with psycopg.connect(_conninfo("heycarl_owner")) as conn:
+        conn.execute(
+            "insert into heycarl_private.session (token_hash, sub, expires_at)"
+            " values (%s, %s, now() + interval '1 hour')",
+            (sessions.token_hash(token), sub),
+        )
+    name = cookie_names(PUBLIC_URL).session
+    return {"cookie": f"{name}={token}", "origin": PUBLIC_URL}

@@ -22,8 +22,15 @@ class Config:
     static_dir: Path | None
     # The VAPID private key (PEM), made on first start.
     vapid_key_file: Path
-    # https://hey.example.com: VAPID's contact for the push services.
+    # https://hey.example.com: the origin every redirect, cookie and CSRF
+    # check is about, and VAPID's contact for the push services.
     public_url: str
+    # The OIDC provider people sign in with, and this app's client there.
+    oidc_issuer: str
+    oidc_client_id: str
+    oidc_client_secret_file: Path
+    # Who may sign in; empty lets in everyone the provider signs in.
+    allowed_emails: frozenset[str] = frozenset()
 
 
 def _path(name: str) -> Path | None:
@@ -46,5 +53,13 @@ def from_env() -> Config:
         plugins_file=_path("PLUGINS_FILE"),
         static_dir=_path("STATIC_DIR"),
         vapid_key_file=Path(_required("VAPID_KEY_FILE")),
-        public_url=_required("PUBLIC_URL"),
+        public_url=_required("PUBLIC_URL").rstrip("/"),
+        oidc_issuer=_required("OIDC_ISSUER"),
+        oidc_client_id=_required("OIDC_CLIENT_ID"),
+        oidc_client_secret_file=Path(_required("OIDC_CLIENT_SECRET_FILE")),
+        allowed_emails=frozenset(
+            e.strip().lower()
+            for e in os.environ.get(ENV_PREFIX + "ALLOWED_EMAILS", "").split(",")
+            if e.strip()
+        ),
     )

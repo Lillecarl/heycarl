@@ -1,0 +1,213 @@
+"""Who may reach which path. Every request passes here first.
+
+Deny by default: a path is public or bearer-authenticated only when this
+file says so, and every other path needs a browser session. A route added
+anywhere else is therefore private until someone lists it here.
+"""
+
+from __future__ import annotations
+
+import enum
+import json
+from dataclasses import dataclass
+from http.cookies import SimpleCookie
+from typing import TYPE_CHECKING, Final
+from urllib.parse import quote, urlsplit
+
+from . import sessions
+
+if TYPE_CHECKING:
+    from psycopg_pool import AsyncConnectionPool
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+
+class Access(enum.Enum):
+    PUBLIC = "public"
+    # The route checks an OAuth bearer token itself (MCP).
+    BEARER = "bearer"
+    SESSION = "session"
+
+
+# Android's install service fetches the manifest and icons without cookies.
+# A browser fetches the service worker's script without following a
+# redirect, so a login redirect there means no worker and no push.
+# /api/public/ is for webhooks, which check their own secret.
+PUBLIC_EXACT: Final = frozenset(
+    {
+        "/healthz",
+        "/manifest.webmanifest",
+        "/service-worker.js",
+        "/auth/login",
+        "/auth/callback",
+    }
+)
+PUBLIC_PREFIXES: Final = ("/icons/", "/api/public/")
+BEARER_EXACT: Final = frozenset({"/mcp"})
+SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def access_for(path: str) -> Access | None:
+    """None for a path no route may see: one with a `.` or `..` segment."""
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        return None
+    if path in PUBLIC_EXACT or path.startswith(PUBLIC_PREFIXES):
+        return Access.PUBLIC
+    if path in BEARER_EXACT:
+        return Access.BEARER
+    return Access.SESSION
+
+
+def safe_next(value: str | None) -> str:
+    """A path on this site to go back to after login, never another site."""
+    if not value or not value.startswith("/") or value.startswith(("//", "/\\")):
+        return "/"
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        return "/"
+    return value
+
+
+def same_origin(origin: str | None, public_url: str) -> bool:
+    return origin is not None and origin.rstrip("/") == public_url
+
+
+@dataclass(frozen=True, slots=True)
+class CookieNames:
+    session: str
+    login: str
+    secure: bool
+
+
+def cookie_names(public_url: str) -> CookieNames:
+    # __Host- cookies must be Secure, with Path=/ and no Domain: no other
+    # host, subdomain or path can set or shadow them. Plain HTTP (the dev
+    # environment) cannot hold Secure cookies, so it gets plain names.
+    if public_url.startswith("https://"):
+        return CookieNames("__Host-heycarl", "__Host-heycarl-login", secure=True)
+    return CookieNames("heycarl", "heycarl-login", secure=False)
+
+
+def set_cookie(names: CookieNames, name: str, value: str, max_age: int) -> str:
+    attributes = [
+        f"{name}={value}",
+        "Path=/",
+        f"Max-Age={max_age}",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if names.secure:
+        attributes.append("Secure")
+    return "; ".join(attributes)
+
+
+def read_cookie(headers: list[tuple[bytes, bytes]], name: str) -> str | None:
+    for key, value in headers:
+        if key == b"cookie":
+            jar = SimpleCookie()
+            try:
+                jar.load(value.decode("latin-1"))
+            except Exception:
+                continue
+            if name in jar:
+                return jar[name].value
+    return None
+
+
+def security_headers(public_url: str) -> list[tuple[bytes, bytes]]:
+    headers = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"same-origin"),
+        (b"content-security-policy", b"frame-ancestors 'none'"),
+        (b"cross-origin-opener-policy", b"same-origin"),
+    ]
+    if public_url.startswith("https://"):
+        headers.append((b"strict-transport-security", b"max-age=31536000"))
+    return headers
+
+
+def header(scope: Scope, name: bytes) -> str | None:
+    for key, value in scope["headers"]:
+        if key == name:
+            return value.decode("latin-1")
+    return None
+
+
+class AccessMiddleware:
+    """Pure ASGI: it never buffers a body, so MCP's event streams pass."""
+
+    def __init__(self, app: ASGIApp, *, public_url: str) -> None:
+        self.app = app
+        self.public_url = public_url
+        self.names = cookie_names(public_url)
+        self.extra = security_headers(public_url)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                present = {k.lower() for k, _ in message.get("headers", [])}
+                message["headers"] = [
+                    *message.get("headers", []),
+                    *(h for h in self.extra if h[0] not in present),
+                ]
+            await send(message)
+
+        path: str = scope["path"]
+        access = access_for(path)
+        if access is None:
+            await self._reply(send_with_headers, 400, {"detail": "bad path"})
+            return
+        if access is not Access.SESSION:
+            await self.app(scope, receive, send_with_headers)
+            return
+
+        token = read_cookie(scope["headers"], self.names.session)
+        # The kernel opens the pool at startup, after the middleware exists.
+        pool: AsyncConnectionPool = scope["app"].state.pool
+        session = await sessions.lookup(pool, token) if token else None
+        if session is None:
+            if path.startswith("/api/") or scope["method"] not in SAFE_METHODS:
+                await self._reply(send_with_headers, 401, {"detail": "sign in"})
+            else:
+                target = path + (
+                    "?" + scope["query_string"].decode()
+                    if scope["query_string"]
+                    else ""
+                )
+                location = "/auth/login?next=" + quote(target, safe="")
+                await self._reply(send_with_headers, 302, None, location=location)
+            return
+        # A browser sends Origin on every cross-origin request and on every
+        # same-origin one that is not a GET or HEAD. SameSite=Lax already
+        # keeps the cookie off cross-site POSTs; this holds without it.
+        if scope["method"] not in SAFE_METHODS and not same_origin(
+            header(scope, b"origin"), self.public_url
+        ):
+            await self._reply(
+                send_with_headers, 403, {"detail": "cross-origin request"}
+            )
+            return
+        scope.setdefault("state", {})["session"] = session
+        await self.app(scope, receive, send_with_headers)
+
+    @staticmethod
+    async def _reply(
+        send: Send,
+        status: int,
+        body: dict[str, str] | None,
+        location: str | None = None,
+    ) -> None:
+        content = b"" if body is None else json.dumps(body).encode()
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"cache-control", b"no-store"),
+        ]
+        if location is not None:
+            headers.append((b"location", location.encode()))
+        await send(
+            {"type": "http.response.start", "status": status, "headers": headers}
+        )
+        await send({"type": "http.response.body", "body": content})

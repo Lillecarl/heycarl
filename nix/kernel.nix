@@ -32,6 +32,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     fastapi
     httpx
     psycopg
+    psycopg-pool
     py-vapid
     pydantic
     pyjwt

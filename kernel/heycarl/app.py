@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import secrets
 import sys
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Final
 
 import anyio
+import httpx
 import structlog
 from fastapi import (
     APIRouter,
@@ -20,17 +22,18 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import PlainTextResponse, RedirectResponse
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from . import migrations, postgrest, push
+from . import migrations, oidc, postgrest, push, sessions
+from .access import AccessMiddleware, cookie_names, safe_next, set_cookie
 from .identity import Caller, caller
 from .storefiles import IMMUTABLE, REVALIDATE, StoreFiles, store_file, version
 from .tokens import Minter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-    import httpx
 
     from .config import Config
     from .plugins import Plugin
@@ -139,6 +142,26 @@ def _register_backends(app: FastAPI, plugins: list[Plugin]) -> list[PluginContex
     return contexts
 
 
+PURGE_SECONDS: Final = 3600.0
+
+
+async def _purge_forever(pool: AsyncConnectionPool) -> None:
+    # Expiry is checked on every lookup; this only keeps the tables small,
+    # and nothing announces that a row expired.
+    while True:
+        try:
+            await sessions.purge(pool)
+        except Exception:
+            log.exception("session_purge_failed")
+        await anyio.sleep(PURGE_SECONDS)
+
+
+def _refuse(status_code: int, message: str) -> Response:
+    return PlainTextResponse(
+        message, status_code=status_code, headers={"cache-control": "no-store"}
+    )
+
+
 class SubscribeKeys(BaseModel):
     p256dh: str
     auth: str
@@ -157,9 +180,21 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         await migrations.migrate(config.database, plugins)
         minter = Minter(config.jwt_secret_file.read_bytes().strip())
         async with (
+            AsyncConnectionPool(
+                config.database, min_size=1, max_size=4, open=False
+            ) as pool,
+            httpx.AsyncClient(timeout=10) as http,
             postgrest.client(config.postgrest_socket) as data,
             anyio.create_task_group() as tg,
         ):
+            app.state.pool = pool
+            app.state.oidc = oidc.Client(
+                http,
+                config.oidc_issuer,
+                config.oidc_client_id,
+                config.oidc_client_secret_file.read_text().strip(),
+            )
+            tg.start_soon(_purge_forever, pool)
             kernel = Kernel(
                 config=config,
                 plugins=plugins,
@@ -180,10 +215,85 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             tg.cancel_scope.cancel()
 
     app = FastAPI(title="Hey Carl", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.add_middleware(AccessMiddleware, public_url=config.public_url)
+    names = cookie_names(config.public_url)
+    redirect_uri = config.public_url + "/auth/callback"
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/auth/login", include_in_schema=False)
+    async def login(request: Request, next: str | None = None) -> Response:
+        attempt = await sessions.start_login(request.app.state.pool, safe_next(next))
+        client: oidc.Client = request.app.state.oidc
+        url = oidc.authorization_url(
+            await client.endpoints(),
+            client_id=config.oidc_client_id,
+            redirect_uri=redirect_uri,
+            state=attempt.state,
+            nonce=attempt.nonce,
+            code_verifier=attempt.code_verifier,
+        )
+        response = RedirectResponse(url, status_code=status.HTTP_302_FOUND)
+        lifetime = int(sessions.LOGIN_LIFETIME.total_seconds())
+        response.headers.append(
+            "set-cookie", set_cookie(names, names.login, attempt.state, lifetime)
+        )
+        response.headers["cache-control"] = "no-store"
+        return response
+
+    @app.get("/auth/callback", include_in_schema=False)
+    async def callback(
+        request: Request,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ) -> Response:
+        if error or not code or not state:
+            return _refuse(400, f"The sign-in failed: {error or 'no code'}.")
+        # The state in the cookie proves this browser started this login, so
+        # nobody can sign a victim in to an attacker's account.
+        cookie = request.cookies.get(names.login)
+        if cookie is None or not secrets.compare_digest(cookie, state):
+            return _refuse(400, "This sign-in was started in another browser.")
+        pool = request.app.state.pool
+        attempt = await sessions.finish_login(pool, state)
+        if attempt is None:
+            return _refuse(400, "This sign-in has expired. Start again.")
+        client: oidc.Client = request.app.state.oidc
+        try:
+            identity = await client.identity(
+                code=code,
+                redirect_uri=redirect_uri,
+                code_verifier=attempt.code_verifier,
+                nonce=attempt.nonce,
+            )
+        except oidc.LoginError as e:
+            log.warning("login_refused", reason=str(e))
+            return _refuse(403, f"The sign-in was refused: {e}.")
+        if config.allowed_emails and identity.email not in config.allowed_emails:
+            log.warning("login_not_allowed", sub=identity.sub, email=identity.email)
+            return _refuse(403, "This account may not use Hey Carl.")
+        token = await sessions.create(pool, identity)
+        log.info("login", sub=identity.sub)
+        response = RedirectResponse(attempt.next, status_code=status.HTTP_303_SEE_OTHER)
+        lifetime = int(sessions.SESSION_LIFETIME.total_seconds())
+        response.headers.append(
+            "set-cookie", set_cookie(names, names.session, token, lifetime)
+        )
+        response.headers.append("set-cookie", set_cookie(names, names.login, "", 0))
+        response.headers["cache-control"] = "no-store"
+        return response
+
+    @app.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+    async def logout(request: Request, _: CallerDep) -> Response:
+        token = request.cookies.get(names.session)
+        if token:
+            await sessions.delete(request.app.state.pool, token)
+        response = Response(status_code=status.HTTP_204_NO_CONTENT)
+        response.headers.append("set-cookie", set_cookie(names, names.session, "", 0))
+        return response
 
     @app.get("/api/me")
     async def me(who: CallerDep) -> Caller:
@@ -310,7 +420,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             # Files at the top level (manifest, service worker, icons), else the
             # SPA's index for any client-side route. Never for an API path: a
             # caller expecting JSON must not get a page and a 200.
-            if path.startswith(("api/", "plugins/")):
+            if path.startswith(("api/", "plugins/", "auth/", ".well-known/")):
                 raise HTTPException(status.HTTP_404_NOT_FOUND)
             candidate = (static / path).resolve()
             target = (

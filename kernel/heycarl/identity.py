@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request, status
 
-# Set by the oauth2-proxy gate (`--pass-user-headers`). Trusted because the
-# kernel listens on a unix socket only the gate's group can open; a request
-# that reached the kernel came through the gate.
-USER_HEADER: Final = "x-forwarded-user"
-EMAIL_HEADER: Final = "x-forwarded-email"
-NAME_HEADER: Final = "x-forwarded-preferred-username"
+if TYPE_CHECKING:
+    from .sessions import Session
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,11 +17,12 @@ class Caller:
 
 
 def caller(request: Request) -> Caller:
-    sub = request.headers.get(USER_HEADER)
-    if not sub:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "no identity from the gate")
-    return Caller(
-        sub=sub,
-        email=request.headers.get(EMAIL_HEADER),
-        username=request.headers.get(NAME_HEADER),
-    )
+    """The signed-in person, from the session AccessMiddleware found.
+
+    No request header names a person: a header is whatever the client sent.
+    """
+    session: Session | None = getattr(request.state, "session", None)
+    if session is None:
+        # A route on a public path that asked for a caller anyway.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "sign in")
+    return Caller(sub=session.sub, email=session.email, username=session.name)
