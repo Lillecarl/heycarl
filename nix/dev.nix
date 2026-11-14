@@ -1,12 +1,14 @@
 # Hey Carl in a vivarium guest, with demo data, to browse from the host.
 #
 #     vivarium up --file . dev --out ./dev
-#     open http://127.0.80.80:8080       # demo@example.com, password "password"
+#     open http://127.0.0.1:8180         # demo@example.com, password "password"
 #     vivarium down --out ./dev
 #
-# A real dex signs people in, as in production. The guest's forwards sit
-# on one fixed loopback address so the browser and the kernel agree on
-# every URL: inside the guest, all of 127.0.0.0/8 is the guest itself.
+# A real dex signs people in, as in production. The site and dex sit on
+# fixed ports on the host's 127.0.0.1, so the browser and the kernel agree
+# on every URL: inside the guest, 127.0.0.1 is the guest itself. Not another
+# loopback address: the MCP SDK accepts a plain-HTTP issuer only on
+# localhost and 127.0.0.1.
 {
   curl,
   gnugrep,
@@ -18,8 +20,9 @@
 }:
 
 let
-  address = "127.0.80.80";
-  publicUrl = "http://${address}:8080";
+  address = "127.0.0.1";
+  port = 8180;
+  publicUrl = "http://${address}:${toString port}";
   issuer = "http://${address}:5556/dex";
 in
 vivarium.mkTest {
@@ -31,11 +34,11 @@ vivarium.mkTest {
       imports = [ ./module.nix ];
       vivarium.memory = "1536M";
       vivarium.forward = [
+        { ports = [ config.vivarium.sshPort ]; }
         {
           inherit address;
           ports = [
-            config.vivarium.sshPort
-            8080
+            port
             5556
           ];
         }
@@ -77,7 +80,7 @@ vivarium.mkTest {
       };
       services.caddy = {
         enable = true;
-        virtualHosts."http://:8080".extraConfig =
+        virtualHosts."http://:${toString port}".extraConfig =
           "reverse_proxy unix/${config.services.heycarl.kernelSocket}";
       };
       systemd.services.caddy.serviceConfig.SupplementaryGroups = [ "heycarl" ];

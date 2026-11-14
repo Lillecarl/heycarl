@@ -12,8 +12,8 @@ import subprocess
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
 
-BASE = "http://127.0.0.1:8080/api/data"
 PUBLIC_URL = os.environ["HEYCARL_PUBLIC_URL"]
+BASE = f"{PUBLIC_URL}/api/data"
 COOKIE = subprocess.run(
     ["heycarl-login", "demo@example.com"], check=True, capture_output=True, text=True
 ).stdout.strip()
