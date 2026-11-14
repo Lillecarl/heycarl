@@ -26,7 +26,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from . import migrations, oidc, postgrest, push, sessions
+from . import mcpserver, migrations, oauth, oidc, postgrest, push, sessions
 from .access import AccessMiddleware, cookie_names, safe_next, set_cookie
 from .identity import Caller, caller
 from .storefiles import IMMUTABLE, REVALIDATE, StoreFiles, store_file, version
@@ -151,6 +151,7 @@ async def _purge_forever(pool: AsyncConnectionPool) -> None:
     while True:
         try:
             await sessions.purge(pool)
+            await oauth.purge(pool)
         except Exception:
             log.exception("session_purge_failed")
         await anyio.sleep(PURGE_SECONDS)
@@ -186,6 +187,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             httpx.AsyncClient(timeout=10) as http,
             postgrest.client(config.postgrest_socket) as data,
             anyio.create_task_group() as tg,
+            server.session_manager.run(),
         ):
             app.state.pool = pool
             app.state.oidc = oidc.Client(
@@ -218,6 +220,8 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     app.add_middleware(AccessMiddleware, public_url=config.public_url)
     names = cookie_names(config.public_url)
     redirect_uri = config.public_url + "/auth/callback"
+    provider = oauth.Provider(lambda: app.state.pool, config.public_url)
+    server = mcpserver.build(provider)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -385,6 +389,8 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         )
 
     contexts = _register_backends(app, plugins)
+    app.include_router(mcpserver.consent_router(provider))
+    mcpserver.mount(app, server)
 
     for plugin in plugins:
         if plugin.manifest.frontend is not None:

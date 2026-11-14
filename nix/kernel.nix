@@ -31,6 +31,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     cryptography
     fastapi
     httpx
+    mcp
     psycopg
     psycopg-pool
     py-vapid

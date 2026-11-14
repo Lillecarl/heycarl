@@ -31,7 +31,9 @@ class Access(enum.Enum):
 # Android's install service fetches the manifest and icons without cookies.
 # A browser fetches the service worker's script without following a
 # redirect, so a login redirect there means no worker and no push.
-# /api/public/ is for webhooks, which check their own secret.
+# /api/public/ is for webhooks, which check their own secret. MCP clients
+# discover, register and trade codes for tokens with no session; the code
+# itself comes from /authorize, which needs one.
 PUBLIC_EXACT: Final = frozenset(
     {
         "/healthz",
@@ -39,6 +41,11 @@ PUBLIC_EXACT: Final = frozenset(
         "/service-worker.js",
         "/auth/login",
         "/auth/callback",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource/mcp",
+        "/token",
+        "/register",
+        "/revoke",
     }
 )
 PUBLIC_PREFIXES: Final = ("/icons/", "/api/public/")
