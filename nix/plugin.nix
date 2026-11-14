@@ -6,19 +6,26 @@
 
   `name`
   : The plugin's directory name under `plugins/`
+
+  `frontend`
+  : The workspace build (./frontend.nix), or null for a plugin without its
+    built frontend, as the kernel's tests use it
 */
 {
   lib,
   runCommand,
   python3,
   name,
+  frontend ? null,
 }:
 let
   root = ../plugins + "/${name}";
+  # The frontend sources build in ./frontend.nix; only the output lands here.
   src = lib.fileset.toSource {
     inherit root;
-    fileset = root;
+    fileset = lib.fileset.difference root (lib.fileset.maybeMissing (root + "/frontend"));
   };
+  hasFrontend = frontend != null && lib.elem name frontend.plugins;
 in
 runCommand "heycarl-plugin-${name}"
   {
@@ -26,7 +33,13 @@ runCommand "heycarl-plugin-${name}"
     kernelSrc = ../kernel/heycarl/plugins.py;
   }
   ''
-    python3 - "$kernelSrc" ${src} ${lib.escapeShellArg name} <<'EOF'
+    cp -r ${src} $out
+    chmod -R u+w $out
+    ${lib.optionalString hasFrontend ''
+      mkdir -p $out/frontend
+      cp -r ${frontend}/plugins/${name} $out/frontend/dist
+    ''}
+    python3 - "$kernelSrc" $out ${lib.escapeShellArg name} <<'EOF'
     import importlib.util, sys
     from pathlib import Path
     spec = importlib.util.spec_from_file_location("plugins", sys.argv[1])
@@ -38,5 +51,4 @@ runCommand "heycarl-plugin-${name}"
     if p.name != sys.argv[3]:
         sys.exit(f"manifest name {p.name!r} != directory {sys.argv[3]!r}")
     EOF
-    cp -r ${src} $out
   ''

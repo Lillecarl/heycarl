@@ -2,5 +2,10 @@
   "contract": 1,
   "name": "todos",
   "title": "Todos",
-  "migrations": "migrations"
+  "migrations": "migrations",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-todos": "Todos" }
+  }
 }

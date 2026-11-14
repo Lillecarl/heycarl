@@ -1,0 +1,54 @@
+:root {
+	color-scheme: dark light;
+	--hc-bg: #1d2021;
+	--hc-fg: #ebdbb2;
+	--hc-muted: #a89984;
+	--hc-accent: #83a598;
+	--hc-error: #fb4934;
+	font-family: system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--hc-bg: #fbf1c7;
+		--hc-fg: #3c3836;
+		--hc-muted: #7c6f64;
+		--hc-accent: #076678;
+		--hc-error: #9d0006;
+	}
+}
+
+body {
+	margin: 0;
+	background: var(--hc-bg);
+	color: var(--hc-fg);
+}
+
+nav {
+	display: flex;
+	gap: 1rem;
+	padding: 0.75rem 1rem;
+	padding-top: max(0.75rem, env(safe-area-inset-top));
+	border-bottom: 1px solid var(--hc-muted);
+	overflow-x: auto;
+}
+
+nav a {
+	color: var(--hc-accent);
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+nav .home {
+	font-weight: bold;
+	color: var(--hc-fg);
+}
+
+main {
+	padding: 1rem;
+}
+
+.error {
+	color: var(--hc-error);
+	padding: 0 1rem;
+}

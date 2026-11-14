@@ -12,16 +12,21 @@ in
 }:
 
 let
+  frontend = pkgs.callPackage ./nix/frontend.nix { };
+  plugin = name: pkgs.callPackage ./nix/plugin.nix { inherit name frontend; };
   plugins = {
+    todos = plugin "todos";
+  };
+  kernel = pkgs.callPackage ./nix/kernel.nix {
+    # Source only: the tests need its migrations, not its frontend.
     todos = pkgs.callPackage ./nix/plugin.nix { name = "todos"; };
   };
-  kernel = pkgs.callPackage ./nix/kernel.nix { inherit (plugins) todos; };
 in
 {
-  inherit kernel plugins;
+  inherit kernel frontend plugins;
   default = kernel;
 
   shell = pkgs.callPackage ./nix/shell.nix { inherit kernel; };
-  checks = pkgs.callPackages ./nix/checks.nix { inherit kernel plugins; };
+  checks = pkgs.callPackages ./nix/checks.nix { inherit kernel frontend plugins; };
   formatter = pkgs.nixfmt-tree;
 }

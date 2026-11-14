@@ -153,7 +153,11 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         if plugin.manifest.frontend is not None:
             app.mount(
                 f"/plugins/{plugin.name}",
-                StaticFiles(directory=plugin.root / plugin.manifest.frontend.directory),
+                StaticFiles(
+                    directory=plugin.root / plugin.manifest.frontend.directory,
+                    # Missing in a source-only plugin, as in the kernel's tests.
+                    check_dir=False,
+                ),
                 name=f"plugin-{plugin.name}",
             )
 

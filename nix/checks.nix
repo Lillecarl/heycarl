@@ -3,12 +3,13 @@
   runCommand,
   nixfmt,
   kernel,
+  frontend,
   plugins,
 }:
 
 plugins
 // {
-  inherit kernel;
+  inherit kernel frontend;
 
   nixfmt =
     runCommand "nixfmt-check"
