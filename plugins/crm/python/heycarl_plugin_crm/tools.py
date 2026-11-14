@@ -47,17 +47,21 @@ ActivityKind = Literal["call", "message", "meeting", "meal", "visit", "other"]
 FieldKind = Literal["email", "phone", "address", "website", "social", "other"]
 DateKind = Literal["birthday", "anniversary", "memorial", "other"]
 
-# Any: PostgREST rows, JSON of the shape the select asks for.
+# Any: PostgREST rows, JSON of the shape the select asks for. A tool never
+# returns Rows bare: FastMCP sends each item of a list as its own text block,
+# so a client reads one person as an object and none as no answer.
 Rows = list[dict[str, Any]]
 
 
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ)
-    async def people_search(ctx: Context, query: str) -> Rows:
+    async def people_search(ctx: Context, query: str) -> dict[str, Rows]:
         """Find people by name, nickname, company, contact detail or tag."""
-        return await call(
-            ctx, SCOPE, "GET", "rpc/search", params={"q": query, "select": SUMMARY}
-        )
+        return {
+            "people": await call(
+                ctx, SCOPE, "GET", "rpc/search", params={"q": query, "select": SUMMARY}
+            )
+        }
 
     @mcp.tool(annotations=READ)
     async def people_list(
@@ -66,7 +70,7 @@ def register_tools(mcp: FastMCP) -> None:
         favorites_only: bool = False,
         include_archived: bool = False,
         limit: int = 100,
-    ) -> Rows:
+    ) -> dict[str, Rows]:
         """List people, favorites first. Filter by tag name if given."""
         select = SUMMARY + (",tag!inner(name)" if tag else "")
         params = [
@@ -80,7 +84,7 @@ def register_tools(mcp: FastMCP) -> None:
             params.append(("favorite", "is.true"))
         if not include_archived:
             params.append(("archived", "is.false"))
-        return await call(ctx, SCOPE, "GET", "contact", params=params)
+        return {"people": await call(ctx, SCOPE, "GET", "contact", params=params)}
 
     @mcp.tool(annotations=READ)
     async def people_get(ctx: Context, person_id: int) -> dict[str, Any]:

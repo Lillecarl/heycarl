@@ -36,9 +36,9 @@ from .oauth import CONSENT_PATH, MCP_PATH, SCOPES, Provider, Scope
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
-    from starlette.applications import Starlette
     from mcp.server.auth.provider import AccessToken, AuthorizationParams
     from mcp.shared.auth import OAuthClientInformationFull
+    from starlette.applications import Starlette
 
     from .app import Kernel
 
@@ -47,9 +47,9 @@ INSTRUCTIONS: Final = (
     " and todos. Every tool acts as the person who approved this connection."
 )
 READ_METHODS: Final = frozenset({"GET", "HEAD"})
-# A union, not Any: FastMCP gives Any no output schema and splits a list
-# into one text block per item. A union gets {"result": ...}.
-# Any: JSON values inside, whatever the table holds.
+# Any: JSON values, whatever the table holds. A tool returns it inside an
+# object: FastMCP sends each item of a bare list as its own text block, and
+# a client that reads the text gets one object, or nothing for no rows.
 Json = dict[str, Any] | list[Any] | str | int | float | bool | None
 SCOPE_TEXT: Final = {
     Scope.READ: "Read your data",
@@ -240,7 +240,7 @@ def build(provider: Provider) -> FastMCP:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def data_read(
         ctx: Context, scope: str, path: str, query: dict[str, str] | None = None
-    ) -> Json:
+    ) -> dict[str, Json]:
         """Read through PostgREST: GET <path>?<query> in one scope.
 
         `path` is a table, a view or rpc/<function>. `query` takes PostgREST
@@ -248,7 +248,7 @@ def build(provider: Provider) -> FastMCP:
         "last_name": "eq.Lindqvist", "order": "first_name", "limit": "20"}.
         Rows of other people never show: row-level security applies.
         """
-        return await call(ctx, scope, "GET", path, params=query)
+        return {"result": await call(ctx, scope, "GET", path, params=query)}
 
     @server.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def data_write(
@@ -258,7 +258,7 @@ def build(provider: Provider) -> FastMCP:
         path: str,
         query: dict[str, str] | None = None,
         body: Json = None,
-    ) -> Json:
+    ) -> dict[str, Json]:
         """Write through PostgREST: POST (insert or call rpc), PATCH or DELETE.
 
         PATCH and DELETE need a filter in `query`, such as {"id": "eq.7"}.
@@ -269,7 +269,7 @@ def build(provider: Provider) -> FastMCP:
         if method == "DELETE":
             filters = ", ".join(f"{k}={v}" for k, v in (query or {}).items())
             await confirm(ctx, f"Delete from {scope}/{path} where {filters}?")
-        return await call(ctx, scope, method, path, params=query, body=body)
+        return {"result": await call(ctx, scope, method, path, params=query, body=body)}
 
     return server
 

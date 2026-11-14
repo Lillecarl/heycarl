@@ -19,12 +19,14 @@ Rows = list[dict[str, Any]]
 
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    async def reminders_list(ctx: Context, include_sent: bool = False) -> Rows:
+    async def reminders_list(
+        ctx: Context, include_sent: bool = False
+    ) -> dict[str, Rows]:
         """List reminders, the soonest first. Birthdays from People are here too."""
         params = {"select": COLUMNS, "order": "due_at"}
         if not include_sent:
             params["state"] = "in.(pending,sending,failed)"
-        return await call(ctx, SCOPE, "GET", "reminder", params=params)
+        return {"reminders": await call(ctx, SCOPE, "GET", "reminder", params=params)}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     async def reminders_add(

@@ -22,12 +22,12 @@ def register(ctx: PluginContext) -> None:
     mcp = ctx.mcp
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    async def todos_list(ctx: Context, include_done: bool = False) -> Rows:
+    async def todos_list(ctx: Context, include_done: bool = False) -> dict[str, Rows]:
         """List todos, the soonest due first; those with no due date last."""
         params = {"select": COLUMNS, "order": "due.asc.nullslast,created_at"}
         if not include_done:
             params["done_at"] = "is.null"
-        return await call(ctx, SCOPE, "GET", "todo", params=params)
+        return {"todos": await call(ctx, SCOPE, "GET", "todo", params=params)}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     async def todos_add(

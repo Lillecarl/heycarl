@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import socket
 from contextlib import asynccontextmanager
@@ -244,12 +245,22 @@ async def connected(
 
 # Any: a tool's structured result, JSON.
 async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
+    """The result, unwrapped from a one-key object such as {"people": [...]}.
+
+    Also checks what a client that reads only the text sees, as claude.ai
+    does: one block, the same JSON. A bare list breaks this, one block per item.
+    """
     result = await session.call_tool(name, arguments)
     assert not result.isError, result.content
     assert result.structuredContent is not None, result
     content = result.structuredContent
-    # FastMCP wraps a result that is not an object in {"result": ...}.
-    return content["result"] if set(content) == {"result"} else content
+    [block] = result.content
+    assert isinstance(block, types.TextContent), block
+    if set(content) == {"result"} and isinstance(content["result"], str):
+        assert block.text == content["result"]
+    else:
+        assert json.loads(block.text) == content, (block.text, content)
+    return next(iter(content.values())) if len(content) == 1 else content
 
 
 async def failure(session: ClientSession, name: str, **arguments: object) -> str:
