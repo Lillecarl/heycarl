@@ -33,4 +33,8 @@ in
   shell = pkgs.callPackage ./nix/shell.nix { inherit kernel frontend; };
   checks = pkgs.callPackages ./nix/checks.nix { inherit kernel frontend plugins; };
   formatter = pkgs.nixfmt-tree;
+
+  dev = pkgs.callPackage ./nix/dev.nix {
+    vivarium = (import "${inputs.nixidae}/vivarium" { inherit pkgs; }).lib;
+  };
 }

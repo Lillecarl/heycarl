@@ -15,6 +15,22 @@
         "type": "github"
       }
     },
+    "nixidae": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794693084,
+        "narHash": "sha256-i5qK1aJM5SzxNfiTjqCuVb133dmJ2QgAdw+WXiW+efo=",
+        "owner": "nixidae",
+        "repo": "nixidae",
+        "rev": "20c4c79b3ed746db63797f1ef765d5bb42f4f401",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixidae",
+        "repo": "nixidae",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1791487292,
@@ -31,6 +47,7 @@
     "root": {
       "inputs": {
         "flake-compatish": "flake-compatish",
+        "nixidae": "nixidae",
         "nixpkgs": "nixpkgs"
       }
     }
