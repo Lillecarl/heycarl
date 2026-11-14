@@ -25,6 +25,7 @@ in
 {
   inherit kernel frontend plugins;
   default = kernel;
+  nixosModule = ./nix/module.nix;
 
   shell = pkgs.callPackage ./nix/shell.nix { inherit kernel; };
   checks = pkgs.callPackages ./nix/checks.nix { inherit kernel frontend plugins; };

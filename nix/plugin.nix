@@ -29,6 +29,9 @@ let
 in
 runCommand "heycarl-plugin-${name}"
   {
+    # The NixOS module names the plugin's schema from it, without reading
+    # the manifest at evaluation time.
+    passthru.pluginName = name;
     nativeBuildInputs = [ (python3.withPackages (p: [ p.pydantic ])) ];
     kernelSrc = ../kernel/heycarl/plugins.py;
   }

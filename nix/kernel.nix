@@ -49,6 +49,9 @@ python3Packages.buildPythonApplication (finalAttrs: {
 
   pythonImportsCheck = [ "heycarl" ];
 
+  # For the NixOS module, which runs it as the postgres superuser.
+  passthru.rolesSql = "${python3Packages.python.sitePackages}/heycarl/schema/roles.sql";
+
   meta = {
     description = "Kernel of a personal application framework";
     # No licence chosen yet; the repository is private.

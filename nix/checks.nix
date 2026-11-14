@@ -1,5 +1,6 @@
 {
   lib,
+  callPackage,
   runCommand,
   nixfmt,
   kernel,
@@ -10,6 +11,8 @@
 plugins
 // {
   inherit kernel frontend;
+
+  vm = callPackage ./vm-test.nix { };
 
   nixfmt =
     runCommand "nixfmt-check"
