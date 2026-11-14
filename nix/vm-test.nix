@@ -90,6 +90,8 @@ testers.runNixOSTest {
         )
 
     with subtest("a restart migrates nothing and keeps the data"):
+        # A switch restarts setup too; it must leave the kernel its files.
+        machine.succeed("systemctl restart heycarl-setup.service")
         machine.succeed("systemctl restart heycarl.service")
         machine.wait_for_file("/run/heycarl/kernel.sock")
         machine.wait_until_succeeds(

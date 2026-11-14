@@ -104,7 +104,10 @@ in
     };
     users.groups.heycarl = { };
 
-    systemd.tmpfiles.rules = [ "d ${runDir} 0710 heycarl heycarl -" ];
+    systemd.tmpfiles.rules = [
+      "d ${runDir} 0710 heycarl heycarl -"
+      "d ${stateDir} 0700 heycarl heycarl -"
+    ];
 
     services.postgresql = {
       enable = true;
@@ -128,8 +131,8 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        StateDirectory = "heycarl";
-        StateDirectoryMode = "0700";
+        # Not StateDirectory=: this unit runs as root, and systemd would chown
+        # the directory and everything in it to root on each start.
       };
       path = [
         config.services.postgresql.package
@@ -140,7 +143,7 @@ in
         if [ ! -s ${jwtSecret} ]; then
           (umask 077; openssl rand -base64 48 | tr -d '\n' > ${jwtSecret})
         fi
-        chown heycarl:heycarl ${stateDir} ${jwtSecret}
+        chown -R heycarl:heycarl ${stateDir}
         runuser -u postgres -- psql -v ON_ERROR_STOP=1 -v database=${cfg.database} \
           -f ${cfg.package}/${cfg.package.passthru.rolesSql} postgres
       '';
