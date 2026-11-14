@@ -51,7 +51,7 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(kernel("gate", f"{as_alice} http://hey/api/plugins"))
-        assert sorted(p["name"] for p in plugins) == ["reminders", "todos"], plugins
+        assert sorted(p["name"] for p in plugins) == ["crm", "reminders", "todos"], plugins
         for p in plugins:
             kernel("gate", f"{as_alice} http://hey{p['frontend']['module']} -o /dev/null")
 
@@ -65,6 +65,19 @@ testers.runNixOSTest {
         assert [t["title"] for t in todos] == ["from the vm"], todos
         bob = json.loads(kernel("gate", "-H 'X-Forwarded-User: bob' http://hey/api/data/todos/todo"))
         assert bob == [], bob
+
+    with subtest("a birthday in the CRM makes a reminder"):
+        post = f"{as_alice} -H 'content-type: application/json' -H 'prefer: return=representation'"
+        [anna] = json.loads(
+            kernel("gate", f"{post} -d '{{\"first_name\": \"Anna\"}}' http://hey/api/data/crm/contact")
+        )
+        kernel(
+            "gate",
+            f"{post} -d '{{\"contact_id\": {anna['id']}, \"month\": 3, \"day\": 14}}' "
+            "http://hey/api/data/crm/important_date",
+        )
+        [rem] = json.loads(kernel("gate", f"{as_alice} http://hey/api/data/reminders/reminder"))
+        assert rem["title"] == "Anna's birthday", rem
 
     with subtest("the kernel made a VAPID key and serves its public half"):
         key = json.loads(kernel("gate", f"{as_alice} http://hey/api/push/key"))["key"]
