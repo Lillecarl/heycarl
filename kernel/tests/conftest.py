@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import shutil
+import socket
 from typing import TYPE_CHECKING
 
 import anyio
@@ -80,6 +81,7 @@ async def app(config: Config) -> AsyncIterator[FastAPI]:
 async def postgrest(config: Config, app: FastAPI) -> AsyncIterator[None]:
     loaded = plugins.load_plugins(config.plugins_file)
     schemas = ",".join([migrations.API_SCHEMA, *(p.schema for p in loaded)])
+    admin_port = _free_port()
     env = {
         **os.environ,
         "PGRST_DB_URI": f"postgresql:///{DATABASE}?host={os.environ['PGHOST']}&user=heycarl_authenticator",
@@ -87,32 +89,41 @@ async def postgrest(config: Config, app: FastAPI) -> AsyncIterator[None]:
         "PGRST_JWT_SECRET": config.jwt_secret_file.read_text(),
         "PGRST_SERVER_UNIX_SOCKET": str(config.postgrest_socket),
         "PGRST_DB_CHANNEL_ENABLED": "true",
+        "PGRST_ADMIN_SERVER_HOST": "127.0.0.1",
+        "PGRST_ADMIN_SERVER_PORT": str(admin_port),
     }
     async with await anyio.open_process(
         ["postgrest"], env=env, stdout=None, stderr=None
     ) as proc:
         try:
-            await _wait_for_socket(config.postgrest_socket)
+            await _wait_until_ready(admin_port)
             yield
         finally:
             proc.terminate()
             await proc.wait()
 
 
-async def _wait_for_socket(path: Path) -> None:
-    # PostgREST announces readiness only by answering on its socket.
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port: int = s.getsockname()[1]
+        return port
+
+
+async def _wait_until_ready(admin_port: int) -> None:
+    # The main socket answers before the first schema load is done, and
+    # PostgREST reloads once more when its listener connects. /ready is 200
+    # only with a connection and a loaded schema cache. It has no event to
+    # wait on, so this polls.
     with anyio.fail_after(20):
-        while True:
-            try:
-                async with httpx.AsyncClient(
-                    transport=httpx.AsyncHTTPTransport(uds=str(path)),
-                    base_url="http://p",
-                ) as c:
-                    if (await c.get("/")).status_code < 500:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{admin_port}") as c:
+            while True:
+                try:
+                    if (await c.get("/ready")).status_code == 200:
                         return
-            except httpx.TransportError:
-                pass
-            await anyio.sleep(0.1)
+                except httpx.TransportError:
+                    pass
+                await anyio.sleep(0.1)
 
 
 @pytest.fixture
