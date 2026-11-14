@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Final
 import anyio
 import structlog
 
+from .tools import register_tools
+
 if TYPE_CHECKING:
     from heycarl.app import Kernel, PluginContext
 
@@ -24,6 +26,7 @@ SYNC_SECONDS: Final = 3600.0
 
 def register(ctx: PluginContext) -> None:
     ctx.job(sync_forever)
+    register_tools(ctx.mcp)
 
 
 async def sync_forever(kernel: Kernel) -> None:

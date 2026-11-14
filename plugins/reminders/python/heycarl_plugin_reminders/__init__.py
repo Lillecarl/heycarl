@@ -14,6 +14,8 @@ import structlog
 from heycarl.push import Payload
 from pydantic import BaseModel
 
+from .tools import register_tools
+
 if TYPE_CHECKING:
     from heycarl.app import Kernel, PluginContext
 
@@ -39,6 +41,7 @@ class Reminder(BaseModel):
 
 def register(ctx: PluginContext) -> None:
     ctx.job(deliver_forever)
+    register_tools(ctx.mcp)
 
 
 def sleep_seconds(next_due: datetime | None, now: datetime) -> float:

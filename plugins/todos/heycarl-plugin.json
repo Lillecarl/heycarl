@@ -3,6 +3,7 @@
   "name": "todos",
   "title": "Todos",
   "migrations": "migrations",
+  "backend": "heycarl_plugin_todos",
   "frontend": {
     "directory": "frontend/dist",
     "module": "index.js",

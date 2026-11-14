@@ -11,14 +11,15 @@ import base64
 import hashlib
 import secrets
 import socket
-from typing import TYPE_CHECKING
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import httpx
 import pytest
 import uvicorn
-from mcp import ClientSession
+from mcp import ClientSession, types
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from fastapi import FastAPI
+    from mcp.client.session import ElicitationFnT
 
 pytestmark = [pytest.mark.anyio, needs_database]
 REDIRECT = "http://localhost:3030/callback"
@@ -192,8 +194,15 @@ async def tokens_for(
     return client, r
 
 
-async def test_the_sdk_client_signs_in_and_calls_a_tool(served: Plain) -> None:
-    browser = as_user("alice-sub")
+@asynccontextmanager
+async def connected(
+    served: Plain,
+    sub: str = "alice-sub",
+    scopes: tuple[str, ...] = ("read", "write"),
+    elicitation: ElicitationFnT | None = None,
+) -> AsyncIterator[ClientSession]:
+    """An initialized SDK session, signed in as `sub` through the consent page."""
+    browser = as_user(sub)
     answer: dict[str, list[str]] = {}
 
     async with httpx.AsyncClient(transport=served, base_url=PUBLIC_URL) as site:
@@ -202,7 +211,7 @@ async def test_the_sdk_client_signs_in_and_calls_a_tool(served: Plain) -> None:
             r = await site.get(url, headers=browser)
             assert r.status_code == 302, r.text
             request_id = parse_qs(urlsplit(r.headers["location"]).query)["request"][0]
-            answer.update(await decide(site, request_id, browser))
+            answer.update(await decide(site, request_id, browser, scopes=scopes))
 
         async def callback_handler() -> tuple[str, str | None]:
             return answer["code"][0], answer["state"][0]
@@ -226,17 +235,202 @@ async def test_the_sdk_client_signs_in_and_calls_a_tool(served: Plain) -> None:
                 write,
                 _,
             ),
-            ClientSession(read, write) as session,
+            ClientSession(read, write, elicitation_callback=elicitation) as session,
         ):
             init = await session.initialize()
             assert init.serverInfo.name == "Hey Carl"
-            tools = await session.list_tools()
-            assert "whoami" in [t.name for t in tools.tools]
-            result = await session.call_tool("whoami", {})
-            assert not result.isError, result
-            assert result.structuredContent is not None
-            assert result.structuredContent["sub"] == "alice-sub"
-            assert sorted(result.structuredContent["scopes"]) == ["read", "write"]
+            yield session
+
+
+# Any: a tool's structured result, JSON.
+async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
+    result = await session.call_tool(name, arguments)
+    assert not result.isError, result.content
+    assert result.structuredContent is not None, result
+    content = result.structuredContent
+    # FastMCP wraps a result that is not an object in {"result": ...}.
+    return content["result"] if set(content) == {"result"} else content
+
+
+async def failure(session: ClientSession, name: str, **arguments: object) -> str:
+    result = await session.call_tool(name, arguments)
+    assert result.isError, result
+    return " ".join(getattr(c, "text", "") for c in result.content)
+
+
+async def test_the_sdk_client_signs_in_and_calls_a_tool(served: Plain) -> None:
+    async with connected(served) as session:
+        tools = await session.list_tools()
+        names = {t.name for t in tools.tools}
+        assert {
+            "whoami",
+            "data_read",
+            "people_search",
+            "todos_add",
+            "reminders_list",
+        } <= names
+        me = await tool(session, "whoami")
+        assert me["sub"] == "alice-sub"
+        assert sorted(me["scopes"]) == ["read", "write"]
+
+
+async def test_people_tools_round_trip(served: Plain) -> None:
+    async with connected(served, sub="erin-sub") as session:
+        anna = await tool(session, "people_add", first_name="Anna", last_name="Berg")
+        await tool(
+            session,
+            "people_add_detail",
+            person_id=anna["id"],
+            kind="email",
+            value="a@example.com",
+        )
+        await tool(
+            session, "people_add_date", person_id=anna["id"], month=3, day=14, year=1990
+        )
+        await tool(session, "people_add_note", person_id=anna["id"], body="Likes tea.")
+        await tool(
+            session,
+            "people_log_activity",
+            person_ids=[anna["id"]],
+            title="Lunch",
+            kind="meal",
+        )
+        [found] = await tool(session, "people_search", query="a@example")
+        assert found["id"] == anna["id"]
+        person = await tool(session, "people_get", person_id=anna["id"])
+        assert person["contact_field"][0]["value"] == "a@example.com"
+        assert person["important_date"][0]["turns"] is not None
+        assert person["note"][0]["body"] == "Likes tea."
+        assert person["timeline"], person
+        assert person["last_contacted"] is not None
+        changed = await tool(
+            session, "people_update", person_id=anna["id"], changes={"favorite": True}
+        )
+        assert changed["favorite"] is True
+        assert [
+            p["id"] for p in await tool(session, "people_list", favorites_only=True)
+        ] == [anna["id"]]
+        upcoming = await tool(session, "people_upcoming", days=366)
+        assert [d["contact"]["id"] for d in upcoming["dates"]] == [anna["id"]]
+    # Another person's connection sees none of it.
+    async with connected(served, sub="frank-sub") as session:
+        assert await tool(session, "people_search", query="Anna") == []
+        assert "no person" in await failure(session, "people_get", person_id=anna["id"])
+
+
+async def test_a_read_only_connection_cannot_write(served: Plain) -> None:
+    async with connected(served, scopes=("read",)) as session:
+        assert await tool(session, "todos_list") == []
+        assert "write scope" in await failure(session, "todos_add", title="x")
+        assert "write scope" in await failure(
+            session,
+            "data_write",
+            scope="todos",
+            method="POST",
+            path="todo",
+            body={"title": "x"},
+        )
+
+
+async def test_delete_asks_and_a_client_that_cannot_ask_cannot_delete(
+    served: Plain,
+) -> None:
+    asked: list[str] = []
+
+    def answering(confirm: bool) -> ElicitationFnT:
+        async def answer(
+            context: object, params: types.ElicitRequestParams
+        ) -> types.ElicitResult:
+            asked.append(params.message)
+            return types.ElicitResult(action="accept", content={"confirm": confirm})
+
+        return answer
+
+    async with connected(served, sub="gina-sub") as session:
+        todo = await tool(session, "todos_add", title="Renew passport")
+        assert "cannot ask" in await failure(
+            session, "todos_delete", todo_id=todo["id"]
+        )
+        assert "cannot ask" in await failure(
+            session,
+            "data_write",
+            scope="todos",
+            method="DELETE",
+            path="todo",
+            query={"id": f"eq.{todo['id']}"},
+        )
+    async with connected(
+        served, sub="gina-sub", elicitation=answering(False)
+    ) as session:
+        assert "not confirmed" in await failure(
+            session, "todos_delete", todo_id=todo["id"]
+        )
+        assert len(await tool(session, "todos_list")) == 1
+    async with connected(
+        served, sub="gina-sub", elicitation=answering(True)
+    ) as session:
+        assert await tool(session, "todos_delete", todo_id=todo["id"]) == "deleted"
+        assert await tool(session, "todos_list") == []
+    assert asked == ["Delete the todo 'Renew passport'?"] * 2
+
+
+async def test_generic_data_tools(served: Plain) -> None:
+    async with connected(served, sub="hank-sub") as session:
+        scopes = await tool(session, "data_scopes")
+        assert {"core", "crm", "todos", "reminders"} <= set(scopes)
+        schema = await tool(session, "data_schema", scope="crm")
+        assert "first_name" in schema["tables"]["contact"]
+        assert "search" in schema["functions"]
+        [row] = await tool(
+            session,
+            "data_write",
+            scope="todos",
+            method="POST",
+            path="todo",
+            body={"title": "via data"},
+        )
+        rows = await tool(
+            session,
+            "data_read",
+            scope="todos",
+            path="todo",
+            query={"select": "id,title"},
+        )
+        assert rows == [{"id": row["id"], "title": "via data"}]
+        assert "PATCH needs a filter" in await failure(
+            session,
+            "data_write",
+            scope="todos",
+            method="PATCH",
+            path="todo",
+            body={"title": "all"},
+        )
+        assert "no data scope" in await failure(
+            session, "data_read", scope="heycarl_private", path="session"
+        )
+
+
+async def test_todos_and_reminders_tools(served: Plain) -> None:
+    async with connected(served, sub="ivy-sub") as session:
+        todo = await tool(
+            session, "todos_add", title="Call the bank", due="2030-01-01T09:00:00+01:00"
+        )
+        assert (await tool(session, "todos_done", todo_id=todo["id"]))["done_at"]
+        assert await tool(session, "todos_list") == []
+        assert len(await tool(session, "todos_list", include_done=True)) == 1
+        rem = await tool(
+            session, "reminders_add", title="Dentist", due_at="2030-01-02T08:00:00Z"
+        )
+        moved = await tool(
+            session,
+            "reminders_move",
+            reminder_id=rem["id"],
+            due_at="2030-01-03T08:00:00Z",
+        )
+        assert moved["due_at"].startswith("2030-01-03")
+        assert [r["title"] for r in await tool(session, "reminders_list")] == [
+            "Dentist"
+        ]
 
 
 async def test_mcp_without_a_token_points_at_the_metadata(
