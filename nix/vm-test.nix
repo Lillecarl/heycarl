@@ -106,6 +106,16 @@ testers.runNixOSTest {
         assert status("http://hey/service-worker.js") == "200"
         curl("-f http://hey/icons/icon-192.png -o /dev/null")
 
+    with subtest("MCP clients find the authorization server without a session"):
+        headers = curl(
+            "-o /dev/null -D - -X POST -H 'content-type: application/json' -d '{}' http://hey/mcp"
+        )
+        assert headers.startswith("HTTP/1.1 401"), headers
+        assert 'resource_metadata="https://hey.example.com/.well-known/oauth-protected-resource/mcp"' in headers, headers
+        meta = json.loads(curl("http://hey/.well-known/oauth-authorization-server"))
+        assert meta["registration_endpoint"] == "https://hey.example.com/register", meta
+        assert status("http://hey/authorize") == "302"
+
     with subtest("signing in through dex"):
         as_alice = login("alice")
         as_bob = login("bob")
