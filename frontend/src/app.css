@@ -44,6 +44,16 @@ nav .home {
 	color: var(--hc-fg);
 }
 
+nav .sign-out {
+	margin-left: auto;
+	font: inherit;
+	color: var(--hc-muted);
+	background: none;
+	border: none;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
 main {
 	padding: 1rem;
 }

@@ -8,6 +8,11 @@
 	onMount(() => {
 		registry.load();
 	});
+
+	async function signOut(): Promise<void> {
+		await fetch('/auth/logout', { method: 'POST' });
+		location.href = '/';
+	}
 </script>
 
 <nav>
@@ -15,6 +20,7 @@
 	{#each registry.pages as page (page.tag)}
 		<a href="/p/{page.plugin}/{page.tag}">{page.title}</a>
 	{/each}
+	<button class="sign-out" onclick={signOut}>Sign out</button>
 </nav>
 
 {#if registry.error}
