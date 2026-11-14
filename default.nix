@@ -17,6 +17,7 @@ let
   pluginNames = [
     "todos"
     "reminders"
+    "crm"
   ];
   plugins = pkgs.lib.genAttrs pluginNames plugin;
   kernel = pkgs.callPackage ./nix/kernel.nix {

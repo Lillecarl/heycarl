@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "name": "crm",
+  "title": "People",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_crm",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-crm": "People" }
+  }
+}
