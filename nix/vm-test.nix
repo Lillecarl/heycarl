@@ -7,7 +7,10 @@ testers.runNixOSTest {
     { pkgs, ... }:
     {
       imports = [ ./module.nix ];
-      services.heycarl.enable = true;
+      services.heycarl = {
+        enable = true;
+        publicUrl = "https://hey.example.com";
+      };
       environment.systemPackages = [ pkgs.curl ];
       # Stands in for the gate: a member of the socket group.
       users.users.gate = {
@@ -48,8 +51,9 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(kernel("gate", f"{as_alice} http://hey/api/plugins"))
-        assert [p["name"] for p in plugins] == ["todos"], plugins
-        kernel("gate", f"{as_alice} http://hey{plugins[0]['frontend']['module']} -o /dev/null")
+        assert sorted(p["name"] for p in plugins) == ["reminders", "todos"], plugins
+        for p in plugins:
+            kernel("gate", f"{as_alice} http://hey{p['frontend']['module']} -o /dev/null")
 
     with subtest("data round-trips through PostgREST with row-level security"):
         kernel(
@@ -61,6 +65,11 @@ testers.runNixOSTest {
         assert [t["title"] for t in todos] == ["from the vm"], todos
         bob = json.loads(kernel("gate", "-H 'X-Forwarded-User: bob' http://hey/api/data/todos/todo"))
         assert bob == [], bob
+
+    with subtest("the kernel made a VAPID key and serves its public half"):
+        key = json.loads(kernel("gate", f"{as_alice} http://hey/api/push/key"))["key"]
+        assert len(key) == 87, key
+        machine.succeed("test $(stat -c %a /var/lib/heycarl/vapid.pem) = 600")
 
     with subtest("only the socket group reaches the kernel"):
         machine.fail(

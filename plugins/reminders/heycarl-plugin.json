@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "name": "reminders",
+  "title": "Reminders",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_reminders",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-reminders": "Reminders" }
+  }
+}

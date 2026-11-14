@@ -31,6 +31,8 @@ let
     HEYCARL_JWT_SECRET_FILE = jwtSecret;
     HEYCARL_PLUGINS_FILE = toString pluginsFile;
     HEYCARL_STATIC_DIR = "${cfg.frontend}/shell";
+    HEYCARL_VAPID_KEY_FILE = "${stateDir}/vapid.pem";
+    HEYCARL_PUBLIC_URL = cfg.publicUrl;
   };
 
   hardening = {
@@ -40,7 +42,11 @@ let
     PrivateTmp = true;
     ProtectSystem = "strict";
     ProtectHome = true;
-    ReadWritePaths = [ runDir ];
+    ReadWritePaths = [
+      runDir
+      # The kernel makes its VAPID key here on first start.
+      stateDir
+    ];
   };
 in
 {
@@ -66,6 +72,15 @@ in
       default = lib.attrValues heycarl.plugins;
       defaultText = lib.literalExpression "lib.attrValues heycarl.plugins";
       description = "Plugin directories, as `plugins.<name>` in default.nix builds them.";
+    };
+
+    publicUrl = lib.mkOption {
+      type = lib.types.str;
+      example = "https://hey.example.com";
+      description = ''
+        Where people reach the app. Push services get it as the VAPID
+        contact, so it must be an https URL that names the sender.
+      '';
     };
 
     database = lib.mkOption {

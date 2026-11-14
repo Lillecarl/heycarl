@@ -14,12 +14,14 @@ in
 let
   frontend = pkgs.callPackage ./nix/frontend.nix { };
   plugin = name: pkgs.callPackage ./nix/plugin.nix { inherit name frontend; };
-  plugins = {
-    todos = plugin "todos";
-  };
+  pluginNames = [
+    "todos"
+    "reminders"
+  ];
+  plugins = pkgs.lib.genAttrs pluginNames plugin;
   kernel = pkgs.callPackage ./nix/kernel.nix {
-    # Source only: the tests need its migrations, not its frontend.
-    todos = pkgs.callPackage ./nix/plugin.nix { name = "todos"; };
+    # Source only: the tests need migrations and backends, not frontends.
+    testPlugins = map (name: pkgs.callPackage ./nix/plugin.nix { inherit name; }) pluginNames;
   };
 in
 {

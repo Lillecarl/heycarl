@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from heycarl.migrations import Migration, MigrationError, pending
 
 A = Migration("core", "0001_a.sql", "select 1;")

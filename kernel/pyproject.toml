@@ -4,12 +4,16 @@ version = "0.1.0"
 description = "Kernel of Hey Carl, a personal application framework"
 requires-python = ">=3.13"
 dependencies = [
+  "aiohttp",
   "anyio",
+  "cryptography",
   "fastapi",
   "httpx",
   "psycopg",
+  "py-vapid",
   "pydantic",
   "pyjwt",
+  "pywebpush",
   "structlog",
   "uvicorn",
 ]

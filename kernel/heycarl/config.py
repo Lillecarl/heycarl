@@ -20,6 +20,10 @@ class Config:
     plugins_file: Path | None
     # The built shell: index.html and its assets.
     static_dir: Path | None
+    # The VAPID private key (PEM), made on first start.
+    vapid_key_file: Path
+    # https://hey.example.com: VAPID's contact for the push services.
+    public_url: str
 
 
 def _path(name: str) -> Path | None:
@@ -41,4 +45,6 @@ def from_env() -> Config:
         jwt_secret_file=Path(_required("JWT_SECRET_FILE")),
         plugins_file=_path("PLUGINS_FILE"),
         static_dir=_path("STATIC_DIR"),
+        vapid_key_file=Path(_required("VAPID_KEY_FILE")),
+        public_url=_required("PUBLIC_URL"),
     )

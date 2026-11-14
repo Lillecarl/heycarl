@@ -4,7 +4,7 @@
   postgresql,
   postgresqlTestHook,
   postgrest,
-  todos,
+  testPlugins,
 }:
 
 python3Packages.buildPythonApplication (finalAttrs: {
@@ -23,19 +23,26 @@ python3Packages.buildPythonApplication (finalAttrs: {
 
   build-system = [ python3Packages.hatchling ];
 
+  # Plugin backends import from this environment too: a plugin cannot bring
+  # its own Python dependencies.
   dependencies = with python3Packages; [
+    aiohttp
     anyio
+    cryptography
     fastapi
     httpx
     psycopg
+    py-vapid
     pydantic
     pyjwt
+    pywebpush
     structlog
     uvicorn
   ];
 
   nativeCheckInputs = [
     python3Packages.pytestCheckHook
+    python3Packages.trustme
     postgresql
     postgresqlTestHook
     postgrest
@@ -45,7 +52,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
   postgresqlTestSetupPost = ''
     PGUSER=postgres psql -v ON_ERROR_STOP=1 -v database=heycarl -f heycarl/schema/roles.sql postgres
   '';
-  env.HEYCARL_TEST_PLUGINS = builtins.toJSON [ "${todos}" ];
+  env.HEYCARL_TEST_PLUGINS = builtins.toJSON (map toString testPlugins);
 
   pythonImportsCheck = [ "heycarl" ];
 
@@ -54,7 +61,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
 
   meta = {
     description = "Kernel of a personal application framework";
-    # No licence chosen yet; the repository is private.
+    # No licence chosen yet.
     mainProgram = "heycarl";
   };
 })
