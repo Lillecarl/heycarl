@@ -41,6 +41,11 @@ testers.runNixOSTest {
         assert json.loads(kernel("gate", "http://hey/manifest.webmanifest"))["name"] == "Hey Carl"
         kernel("gate", "http://hey/icons/icon-192.png -o /dev/null")
 
+    with subtest("an unknown API path is a 404, not the shell"):
+        machine.fail(
+            "runuser -u gate -- curl -sf --unix-socket /run/heycarl/kernel.sock http://hey/api/public/nope"
+        )
+
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(kernel("gate", f"{as_alice} http://hey/api/plugins"))
         assert [p["name"] for p in plugins] == ["todos"], plugins

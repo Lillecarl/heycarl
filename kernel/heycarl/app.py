@@ -169,7 +169,10 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         @app.get("/{path:path}", include_in_schema=False)
         async def shell(path: str) -> FileResponse:
             # Files at the top level (manifest, service worker, icons), else the
-            # SPA's index for any client-side route.
+            # SPA's index for any client-side route. Never for an API path: a
+            # caller expecting JSON must not get a page and a 200.
+            if path.startswith(("api/", "plugins/")):
+                raise HTTPException(status.HTTP_404_NOT_FOUND)
             candidate = (static / path).resolve()
             if (
                 path
