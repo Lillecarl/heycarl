@@ -64,8 +64,9 @@ never sees a dex token.
   recreated on every start.
 - `heycarl_plugin_<name>`: one schema per plugin, with its own migrations.
   Exposed through `Accept-Profile` / `Content-Profile`.
-- Migrations run at kernel start, in one transaction under an advisory lock,
-  and end with `NOTIFY pgrst`.
+- Migrations run in one transaction under an advisory lock, and end with
+  `NOTIFY pgrst`. The `heycarl-migrate` unit runs them before PostgREST
+  starts, and the kernel runs them again at its start.
 
 Traps from Torg that apply here:
 
@@ -115,21 +116,45 @@ This is the one path past the gate, and it is narrow by intent.
 ## First plugins
 
 1. **todos**: the thin slice that proves the stack end to end.
-2. **reminders**: a reminder on any object. Delivery by web push, and by a
-   phone call through 46elks with text-to-speech.
-3. **contacts**: Monica's model: people, relationships, notes, activities,
-   important dates (which create reminders), "last talked to".
+2. **reminders**: a reminder on any object. Delivery by web push. A phone
+   call through 46elks is planned; how 46elks speaks text is not yet
+   checked.
+3. **crm**: Monica's model: people, contact fields, relationships, notes,
+   activities, tags, gifts and important dates. See below.
 4. **calendar**: Google (private), Google Workspace (work) and CalDAV/ICS.
    Mirrors events between calendars at a chosen visibility: full details,
    or "busy" with no title.
+
+## The CRM
+
+The schema is the application. The page is a thin view over PostgREST, and
+the only Python is one job.
+
+- Embedding: one request loads a contact with its fields, dates, tags and
+  gifts. Tags and activities embed many-to-many through their join tables.
+- Computed columns: `last_contacted`, `touch_due`, and on a date
+  `next_occurrence`, `days_until` and `turns`. PostgREST filters and orders
+  by them, so "coming up in 30 days" is one query string.
+- A computed relationship, `relations(contact)`, over a view that shows
+  each relationship from both sides with the reverse kind.
+- RPC: `search` (names, fields, tags) and `log_activity` (one activity,
+  many people).
+- Tenancy: children reference `(contact_id, owner_sub)`, and RLS pins
+  `owner_sub` to the caller. A foreign key ignores RLS, so without the
+  composite key a row could point at another owner's contact.
+- Reminders: triggers on a date, a contact's name and the time zone keep a
+  row in the reminders plugin. They run as the table owner, so they write
+  rows for any owner. A reminder deleted by hand stays deleted until the
+  next occurrence. An hourly job gives a passed date next year's reminder.
+  Without the reminders plugin these do nothing.
+- The page writes the browser's time zone to `preference`; dates and
+  reminder times use it.
 
 ## Open questions
 
 - Google OAuth apps in "testing" status may expire refresh tokens after
   about a week, and a Workspace admin may have to allow the app. Check
   before the calendar plugin is built.
-- `hey.lillecarl.com` needs an A record to 65.108.150.98 before the first
-  switch. Caddy gets the certificate over HTTP-01.
 
 ## Build order
 
