@@ -200,6 +200,11 @@
 		return d.year ? `${shown} ${d.year}` : shown;
 	}
 
+	function turnsText(d: ImportantDate): string {
+		if (d.turns === null || d.kind === 'memorial' || d.kind === 'other') return '';
+		return d.kind === 'birthday' ? ` · turns ${d.turns}` : ` · ${d.turns} years`;
+	}
+
 	// Relationships
 
 	let relKind = $state('friend');
@@ -261,7 +266,8 @@
 			contact_ids: [id, ...activityWith],
 			title,
 			kind: activityKind,
-			happened_at: localDate(activityDate).toISOString()
+			// Today means now; an earlier day has no time to give.
+			happened_at: (activityDate === today() ? new Date() : localDate(activityDate)).toISOString()
 		};
 		activityTitle = '';
 		activityWith = [];
@@ -403,9 +409,7 @@
 						{#if d.kind !== 'other' && d.label}<span class="muted">({d.label})</span>{/if}
 						<span class="muted">· {dateText(d)}</span>
 					</span>
-					<span class="muted">
-						{inDays(d.days_until)}{#if d.turns !== null && d.kind !== 'memorial'}, {d.turns}{/if}
-					</span>
+					<span class="muted">{inDays(d.days_until)}{turnsText(d)}</span>
 					<button
 						class="icon"
 						title={d.remind ? 'Reminder on' : 'Reminder off'}
@@ -489,6 +493,7 @@
 			<input type="date" bind:value={activityDate} required />
 			<input class="grow" placeholder="What happened" bind:value={activityTitle} maxlength="200" />
 			{#if others.length}
+				<span class="muted">with</span>
 				<select multiple bind:value={activityWith} aria-label="Also with" class="grow">
 					{#each others as o (o.id)}<option value={o.id}>{fullName(o)}</option>{/each}
 				</select>

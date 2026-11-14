@@ -78,7 +78,12 @@
 
 	function describe(d: ImportantDate): string {
 		const what = d.kind === 'other' ? d.label || 'date' : d.kind;
-		const count = d.turns !== null && d.kind !== 'memorial' ? ` (${d.turns})` : '';
+		const count =
+			d.turns === null || d.kind === 'memorial' || d.kind === 'other'
+				? ''
+				: d.kind === 'birthday'
+					? `, turns ${d.turns}`
+					: `, ${d.turns} years`;
 		return `${what}${count}`;
 	}
 

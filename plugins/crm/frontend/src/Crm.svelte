@@ -110,6 +110,13 @@
 		color: var(--hc-muted, gray);
 		margin: 0 0 0.5rem;
 	}
+	.crm :global(ul + h2) {
+		margin-top: 1.5rem;
+	}
+	.crm :global(dd input:not([type='number'])) {
+		width: 100%;
+		box-sizing: border-box;
+	}
 	.crm :global(ul.plain) {
 		list-style: none;
 		padding: 0;
