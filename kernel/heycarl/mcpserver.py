@@ -12,7 +12,7 @@ from html import escape
 from typing import TYPE_CHECKING, Final
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.settings import (
@@ -26,6 +26,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
 from starlette.routing import Route
 
+from . import oauth
 from .identity import caller
 from .oauth import CONSENT_PATH, MCP_PATH, SCOPES, Provider, Scope
 
@@ -203,5 +204,17 @@ def consent_router(provider: Provider) -> APIRouter:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"cache-control": "no-store"},
         )
+
+    @router.get("/api/oauth/grants")
+    async def list_grants(request: Request) -> list[oauth.Grant]:
+        return await oauth.grants(request.app.state.pool, caller(request).sub)
+
+    @router.delete(
+        "/api/oauth/grants/{grant_id}", status_code=status.HTTP_204_NO_CONTENT
+    )
+    async def revoke(grant_id: int, request: Request) -> None:
+        pool = request.app.state.pool
+        if not await oauth.revoke_grant(pool, caller(request).sub, grant_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "no such connection")
 
     return router

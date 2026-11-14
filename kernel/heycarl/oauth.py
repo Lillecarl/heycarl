@@ -8,7 +8,8 @@ the consent page, where a signed-in person approves it.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 from urllib.parse import urlencode, urlsplit
@@ -358,6 +359,46 @@ async def _issue(conn: AsyncConnection, grant_id: int, scopes: list[str]) -> OAu
         scope=" ".join(scopes),
         refresh_token=refresh,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Grant:
+    id: int
+    # Chosen by whoever registered the client; never proof of who it is.
+    client_name: str | None
+    redirect_hosts: list[str]
+    scopes: list[str]
+    created_at: datetime
+
+
+async def grants(pool: AsyncConnectionPool, sub: str) -> list[Grant]:
+    """The live connections `sub` approved, newest first."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "select g.id, c.info, g.scopes, g.created_at"
+            " from heycarl_private.oauth_grant g"
+            " join heycarl_private.oauth_client c using (client_id)"
+            " where g.sub = %s and exists (select from heycarl_private.oauth_token t"
+            "   where t.grant_id = g.id and t.expires_at > now())"
+            " order by g.created_at desc",
+            (sub,),
+        )
+        rows = await cur.fetchall()
+    result = []
+    for grant_id, info, scopes, created_at in rows:
+        client = OAuthClientInformationFull.model_validate(info)
+        hosts = sorted({urlsplit(str(u)).netloc for u in client.redirect_uris or []})
+        result.append(Grant(grant_id, client.client_name, hosts, scopes, created_at))
+    return result
+
+
+async def revoke_grant(pool: AsyncConnectionPool, sub: str, grant_id: int) -> bool:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "delete from heycarl_private.oauth_grant where id = %s and sub = %s",
+            (grant_id, sub),
+        )
+    return cur.rowcount > 0
 
 
 async def purge(pool: AsyncConnectionPool) -> None:

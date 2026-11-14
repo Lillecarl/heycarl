@@ -386,3 +386,28 @@ async def test_a_token_is_bound_to_its_client(site: httpx.AsyncClient) -> None:
         },
     )
     assert stolen.status_code == 400
+
+
+async def test_a_person_sees_and_ends_only_their_own_connections(
+    site: httpx.AsyncClient,
+) -> None:
+    client, r = await tokens_for(site, sub="carol-sub")
+    alice, bob = as_user("carol-sub"), as_user("dave-sub")
+    [grant] = (await site.get("/api/oauth/grants", headers=alice)).json()
+    assert grant["client_name"] == "Test client"
+    assert grant["redirect_hosts"] == ["localhost:3030"]
+    assert grant["scopes"] == ["read", "write"]
+    assert (await site.get("/api/oauth/grants", headers=bob)).json() == []
+    url = f"/api/oauth/grants/{grant['id']}"
+    assert (await site.delete(url, headers=bob)).status_code == 404
+    assert (await site.delete(url, headers=alice)).status_code == 204
+    refresh = await site.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": r.json()["refresh_token"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+        },
+    )
+    assert refresh.status_code == 400
