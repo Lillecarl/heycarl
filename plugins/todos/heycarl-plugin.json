@@ -1,0 +1,6 @@
+{
+  "contract": 1,
+  "name": "todos",
+  "title": "Todos",
+  "migrations": "migrations"
+}
