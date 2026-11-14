@@ -8,10 +8,12 @@ the request to the SDK app, which matches the path again.
 
 from __future__ import annotations
 
+import json
 from html import escape
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
@@ -20,25 +22,35 @@ from mcp.server.auth.settings import (
     ClientRegistrationOptions,
     RevocationOptions,
 )
+from mcp.server.elicitation import AcceptedElicitation
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ClientCapabilities, ElicitationCapability, ToolAnnotations
 from pydantic import BaseModel
 from starlette.routing import Route
 
-from . import oauth
+from . import oauth, postgrest
 from .identity import caller
 from .oauth import CONSENT_PATH, MCP_PATH, SCOPES, Provider, Scope
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+    from starlette.applications import Starlette
     from mcp.server.auth.provider import AccessToken, AuthorizationParams
     from mcp.shared.auth import OAuthClientInformationFull
+
+    from .app import Kernel
 
 INSTRUCTIONS: Final = (
     "Hey Carl is one person's application framework: contacts, reminders"
     " and todos. Every tool acts as the person who approved this connection."
 )
+READ_METHODS: Final = frozenset({"GET", "HEAD"})
+# A union, not Any: FastMCP gives Any no output schema and splits a list
+# into one text block per item. A union gets {"result": ...}.
+# Any: JSON values inside, whatever the table holds.
+Json = dict[str, Any] | list[Any] | str | int | float | bool | None
 SCOPE_TEXT: Final = {
     Scope.READ: "Read your data",
     Scope.WRITE: "Change and delete your data",
@@ -70,6 +82,99 @@ def require(ctx: Context, scope: Scope) -> str:
     if scope not in token.scopes or token.subject is None:
         raise ToolError(f"this connection lacks the {scope} scope")
     return token.subject
+
+
+def kernel_of(ctx: Context) -> Kernel:
+    request = ctx.request_context.request
+    if request is None:
+        raise ToolError("no request")
+    kernel: Kernel = request.app.state.kernel
+    return kernel
+
+
+# Any: PostgREST's JSON, whatever the table holds.
+async def call(
+    ctx: Context,
+    scope: str,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, str] | list[tuple[str, str]] | None = None,
+    body: object = None,
+) -> Any:
+    """PostgREST as the person who approved this connection, so RLS applies.
+
+    GET and HEAD need `read`; anything else needs `write`. `scope` is
+    "core" or a plugin's name.
+    """
+    method = method.upper()
+    sub = require(ctx, Scope.READ if method in READ_METHODS else Scope.WRITE)
+    kernel = kernel_of(ctx)
+    schema = kernel.schema_for(scope)
+    if schema is None:
+        raise ToolError(f"no data scope {scope!r}; see the data_scopes tool")
+    response = await kernel.data.request(
+        method,
+        "/" + path.lstrip("/"),
+        params=None if params is None else httpx.QueryParams(params),
+        headers=postgrest.request_headers(
+            {
+                "content-type": "application/json",
+                "accept": "application/json",
+                "prefer": "return=representation",
+            },
+            kernel.minter.user(sub),
+            schema,
+        ),
+        content=None if body is None else json.dumps(body),
+    )
+    if response.is_error:
+        raise ToolError(f"{response.status_code}: {response.text[:2000]}")
+    return response.json() if response.content else None
+
+
+class Confirmation(BaseModel):
+    confirm: bool
+
+
+async def confirm(ctx: Context, message: str) -> None:
+    """Asks the person through the client; refuses when the client cannot ask.
+
+    An AI must never answer this for the person, so a client without
+    elicitation gets an error, not a skipped question.
+    """
+    if not ctx.session.check_client_capability(
+        ClientCapabilities(elicitation=ElicitationCapability())
+    ):
+        raise ToolError(
+            "this change needs your confirmation, and this client cannot ask"
+            " for it; make it in the Hey Carl app instead"
+        )
+    answer = await ctx.elicit(message, schema=Confirmation)
+    if not (isinstance(answer, AcceptedElicitation) and answer.data.confirm):
+        raise ToolError("not confirmed; nothing changed")
+
+
+def condensed_schema(openapi: dict[str, Any]) -> dict[str, Any]:
+    """Tables with their columns, and the functions, from PostgREST's OpenAPI.
+
+    Any: the OpenAPI document, passed through from PostgREST.
+    """
+    tables = {
+        name: {
+            column: " ".join(
+                str(spec.get(key)) for key in ("format", "description") if spec.get(key)
+            )
+            for column, spec in definition.get("properties", {}).items()
+        }
+        for name, definition in openapi.get("definitions", {}).items()
+    }
+    functions = sorted(
+        path.removeprefix("/rpc/")
+        for path in openapi.get("paths", {})
+        if path.startswith("/rpc/")
+    )
+    return {"tables": tables, "functions": functions}
 
 
 def build(provider: Provider) -> FastMCP:
@@ -113,14 +218,70 @@ def build(provider: Provider) -> FastMCP:
             scopes=token.scopes,
         )
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def data_scopes(ctx: Context) -> dict[str, str]:
+        """The data scopes, each a PostgreSQL schema served by PostgREST.
+
+        Pass a scope to data_schema, data_read and data_write.
+        """
+        require(ctx, Scope.READ)
+        kernel = kernel_of(ctx)
+        return {
+            "core": "Hey Carl itself: push subscriptions",
+            **{p.name: p.manifest.title for p in kernel.plugins},
+        }
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def data_schema(ctx: Context, scope: str) -> dict[str, Any]:
+        """Tables, their columns and the functions (rpc/...) of one scope."""
+        openapi = await call(ctx, scope, "GET", "/")
+        return condensed_schema(openapi)
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def data_read(
+        ctx: Context, scope: str, path: str, query: dict[str, str] | None = None
+    ) -> Json:
+        """Read through PostgREST: GET <path>?<query> in one scope.
+
+        `path` is a table, a view or rpc/<function>. `query` takes PostgREST
+        syntax, for example {"select": "id,first_name,contact_field(*)",
+        "last_name": "eq.Lindqvist", "order": "first_name", "limit": "20"}.
+        Rows of other people never show: row-level security applies.
+        """
+        return await call(ctx, scope, "GET", path, params=query)
+
+    @server.tool(annotations=ToolAnnotations(destructiveHint=True))
+    async def data_write(
+        ctx: Context,
+        scope: str,
+        method: Literal["POST", "PATCH", "DELETE"],
+        path: str,
+        query: dict[str, str] | None = None,
+        body: Json = None,
+    ) -> Json:
+        """Write through PostgREST: POST (insert or call rpc), PATCH or DELETE.
+
+        PATCH and DELETE need a filter in `query`, such as {"id": "eq.7"}.
+        A DELETE asks the person to confirm first. Returns the rows written.
+        """
+        if method in {"PATCH", "DELETE"} and not query:
+            raise ToolError(f"{method} needs a filter in query")
+        if method == "DELETE":
+            filters = ", ".join(f"{k}={v}" for k, v in (query or {}).items())
+            await confirm(ctx, f"Delete from {scope}/{path} where {filters}?")
+        return await call(ctx, scope, method, path, params=query, body=body)
+
     return server
 
 
-def mount(app: FastAPI, server: FastMCP) -> None:
+def mount(app: FastAPI, server: FastMCP) -> Starlette:
+    """Returns the SDK app. A tool's request belongs to it, not to `app`, so
+    the kernel sets `state.kernel` on both."""
     sdk_app = server.streamable_http_app()
     for route in sdk_app.routes:
         if isinstance(route, Route):
             app.router.add_route(route.path, sdk_app, include_in_schema=False)
+    return sdk_app
 
 
 def _page(body: str, status_code: int = 200) -> HTMLResponse:

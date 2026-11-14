@@ -35,6 +35,8 @@ from .tokens import Minter
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from mcp.server.fastmcp import FastMCP
+
     from .config import Config
     from .plugins import Plugin
 
@@ -101,6 +103,9 @@ class PluginContext:
     """What a plugin backend's `register(ctx)` gets."""
 
     plugin: Plugin
+    # The one MCP server. Name tools <plugin>_<verb>, and reach data through
+    # heycarl.mcpserver.call, which acts as the connection's person.
+    mcp: FastMCP
     # Mounted at /api/plugins/<name>, behind the gate.
     router: APIRouter = field(default_factory=APIRouter)
     # Mounted at /api/public/<name>. The gate lets these through with no
@@ -124,7 +129,9 @@ KernelDep = Annotated[Kernel, Depends(_kernel)]
 CallerDep = Annotated[Caller, Depends(caller)]
 
 
-def _register_backends(app: FastAPI, plugins: list[Plugin]) -> list[PluginContext]:
+def _register_backends(
+    app: FastAPI, plugins: list[Plugin], server: FastMCP
+) -> list[PluginContext]:
     contexts = []
     for plugin in plugins:
         if plugin.manifest.backend is None:
@@ -134,7 +141,7 @@ def _register_backends(app: FastAPI, plugins: list[Plugin]) -> list[PluginContex
         sys.path.insert(0, str(plugin.root / "python"))
         module = importlib.import_module(plugin.manifest.backend)
         register: Callable[[PluginContext], None] = module.register
-        ctx = PluginContext(plugin=plugin)
+        ctx = PluginContext(plugin=plugin, mcp=server)
         register(ctx)
         app.include_router(ctx.router, prefix=f"/api/plugins/{plugin.name}")
         app.include_router(ctx.public_router, prefix=f"/api/public/{plugin.name}")
@@ -210,6 +217,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
                 ),
             )
             app.state.kernel = kernel
+            sdk_app.state.kernel = kernel
             for ctx in contexts:
                 for job in ctx.jobs:
                     tg.start_soon(job, kernel)
@@ -388,9 +396,9 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             headers=postgrest.response_headers(upstream.headers),
         )
 
-    contexts = _register_backends(app, plugins)
+    contexts = _register_backends(app, plugins, server)
     app.include_router(mcpserver.consent_router(provider))
-    mcpserver.mount(app, server)
+    sdk_app = mcpserver.mount(app, server)
 
     for plugin in plugins:
         if plugin.manifest.frontend is not None:
