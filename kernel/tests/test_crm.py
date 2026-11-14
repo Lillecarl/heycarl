@@ -236,6 +236,34 @@ async def test_a_birthday_keeps_a_reminder(client: httpx.AsyncClient) -> None:
     assert await reminders(client, u) == []
 
 
+async def test_touch_due_counts_days_in_the_owners_zone(
+    client: httpx.AsyncClient,
+) -> None:
+    u = "crm-touch"
+    await call(client, u, "POST", "crm/preference", {"timezone": ZONE})
+    [row] = await call(
+        client,
+        u,
+        "POST",
+        "crm/contact",
+        {"first_name": "Gus", "stay_in_touch_days": 7},
+    )
+    # 00:30 local is the evening before in UTC.
+    local_day = datetime.now(OFFSET).date() - timedelta(days=1)
+    at = datetime.combine(local_day, time(0, 30), OFFSET)
+    await call(
+        client,
+        u,
+        "POST",
+        "crm/rpc/log_activity",
+        {"contact_ids": [row["id"]], "title": "Call", "happened_at": at.isoformat()},
+    )
+    [due] = await call(
+        client, u, "GET", f"crm/contact?id=eq.{row['id']}&select=touch_due"
+    )
+    assert due["touch_due"] == (local_day + timedelta(days=7)).isoformat()
+
+
 async def test_a_passed_date_gets_next_years_reminder(
     client: httpx.AsyncClient, kernel: Kernel, config: Config
 ) -> None:
