@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -19,12 +20,11 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import migrations, postgrest, push
 from .identity import Caller, caller
+from .storefiles import IMMUTABLE, REVALIDATE, StoreFiles, store_file, version
 from .tokens import Minter
 
 if TYPE_CHECKING:
@@ -242,7 +242,10 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
                 "frontend": None
                 if p.manifest.frontend is None
                 else {
-                    "module": f"/plugins/{p.name}/{p.manifest.frontend.module}",
+                    # A new URL per build: a browser that cached the module
+                    # under older headers never uses that copy again.
+                    "module": f"/plugins/{p.name}/{p.manifest.frontend.module}"
+                    f"?v={version(p.root)}",
                     "pages": p.manifest.frontend.pages,
                 },
             }
@@ -277,7 +280,8 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         if plugin.manifest.frontend is not None:
             app.mount(
                 f"/plugins/{plugin.name}",
-                StaticFiles(
+                StoreFiles(
+                    cache_control=REVALIDATE,
                     directory=plugin.root / plugin.manifest.frontend.directory,
                     # Missing in a source-only plugin, as in the kernel's tests.
                     check_dir=False,
@@ -288,22 +292,35 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     static = config.static_dir
     if static is not None:
         index = static / "index.html"
-        app.mount("/_app", StaticFiles(directory=static / "_app"), name="shell-assets")
+        app.mount(
+            "/_app/immutable",
+            StoreFiles(
+                cache_control=IMMUTABLE, directory=static / "_app" / "immutable"
+            ),
+            name="shell-immutable",
+        )
+        app.mount(
+            "/_app",
+            StoreFiles(cache_control=REVALIDATE, directory=static / "_app"),
+            name="shell-assets",
+        )
 
-        @app.get("/{path:path}", include_in_schema=False)
-        async def shell(path: str) -> FileResponse:
+        @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+        async def shell(path: str, request: Request) -> Response:
             # Files at the top level (manifest, service worker, icons), else the
             # SPA's index for any client-side route. Never for an API path: a
             # caller expecting JSON must not get a page and a 200.
             if path.startswith(("api/", "plugins/")):
                 raise HTTPException(status.HTTP_404_NOT_FOUND)
             candidate = (static / path).resolve()
-            if (
-                path
+            target = (
+                candidate
+                if path
                 and candidate.is_relative_to(static.resolve())
                 and candidate.is_file()
-            ):
-                return FileResponse(candidate)
-            return FileResponse(index)
+                else index
+            )
+            stat_result = await anyio.to_thread.run_sync(os.stat, target)
+            return store_file(target, request.headers, REVALIDATE, stat_result)
 
     return app
