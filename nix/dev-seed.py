@@ -1,14 +1,22 @@
 """Demo data for the dev environment, through the API as the `demo` user.
 
-Dates are relative to today, so "coming up" and "time to get in touch"
-always have something to show. Runs once: a second run adds a second set.
+Signs in through dex like a browser (heycarl-login), then writes with that
+session. Dates are relative to today, so "coming up" and "time to get in
+touch" always have something to show. Runs once: a second run adds a
+second set.
 """
 
 import json
+import os
+import subprocess
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
 
 BASE = "http://127.0.0.1:8080/api/data"
+PUBLIC_URL = os.environ["HEYCARL_PUBLIC_URL"]
+COOKIE = subprocess.run(
+    ["heycarl-login", "demo@example.com"], check=True, capture_output=True, text=True
+).stdout.strip()
 
 
 def call(path, body=None, method=None):
@@ -19,6 +27,8 @@ def call(path, body=None, method=None):
         headers={
             "content-type": "application/json",
             "prefer": "return=representation",
+            "cookie": COOKIE,
+            "origin": PUBLIC_URL,
         },
     )
     with urllib.request.urlopen(request) as response:
@@ -65,7 +75,11 @@ for first, last, nick, company, job, favorite, touch in PEOPLE:
     )
     ids[first] = row["id"]
 
-call("crm/contact?first_name=eq.Anna", {"description": "Met at the climbing gym in 2019. Vegetarian, loves board games."}, "PATCH")
+call(
+    "crm/contact?first_name=eq.Anna",
+    {"description": "Met at the climbing gym in 2019. Vegetarian, loves board games."},
+    "PATCH",
+)
 
 fields = [
     ("Anna", "phone", "mobile", "+46 70 123 45 67"),
@@ -78,7 +92,10 @@ fields = [
     ("Greta", "phone", "landline", "+46 8 765 43 21"),
 ]
 for who, kind, label, value in fields:
-    call("crm/contact_field", {"contact_id": ids[who], "kind": kind, "label": label, "value": value})
+    call(
+        "crm/contact_field",
+        {"contact_id": ids[who], "kind": kind, "label": label, "value": value},
+    )
 
 dates = [
     ("Anna", "birthday", "", soon(3), 1991),
@@ -110,7 +127,11 @@ relationships = [
 for a, b, kind in relationships:
     call("crm/relationship", {"contact_id": ids[a], "other_id": ids[b], "kind": kind})
 
-for name, people in [("family", ["Anna", "Björn", "Greta"]), ("work", ["Cecilia", "David"]), ("climbing", ["Anna", "Elin"])]:
+for name, people in [
+    ("family", ["Anna", "Björn", "Greta"]),
+    ("work", ["Cecilia", "David"]),
+    ("climbing", ["Anna", "Elin"]),
+]:
     [tag] = call("crm/tag", {"name": name})
     for who in people:
         call("crm/contact_tag", {"contact_id": ids[who], "tag_id": tag["id"]})
@@ -125,12 +146,29 @@ activities = [
 for people, kind, title, days in activities:
     call(
         "crm/rpc/log_activity",
-        {"contact_ids": [ids[p] for p in people], "title": title, "kind": kind, "happened_at": ago(days)},
+        {
+            "contact_ids": [ids[p] for p in people],
+            "title": title,
+            "kind": kind,
+            "happened_at": ago(days),
+        },
     )
 
-call("crm/note", {"contact_id": ids["Anna"], "body": "Wants to try the new bouldering place in Hammarby."})
-call("crm/note", {"contact_id": ids["Greta"], "body": "Hip surgery went well. Call on Sundays."})
-call("crm/gift", {"contact_id": ids["Anna"], "title": "Wingspan expansion", "state": "idea"})
+call(
+    "crm/note",
+    {
+        "contact_id": ids["Anna"],
+        "body": "Wants to try the new bouldering place in Hammarby.",
+    },
+)
+call(
+    "crm/note",
+    {"contact_id": ids["Greta"], "body": "Hip surgery went well. Call on Sundays."},
+)
+call(
+    "crm/gift",
+    {"contact_id": ids["Anna"], "title": "Wingspan expansion", "state": "idea"},
+)
 call("crm/gift", {"contact_id": ids["Greta"], "title": "Photo book", "state": "bought"})
 
 call("todos/todo", {"title": "Book a table for Anna's birthday"})

@@ -1,17 +1,27 @@
 # Hey Carl in a vivarium guest, with demo data, to browse from the host.
 #
-#     vivarium up --file . dev --out ./dev     # or: nix run --file . dev.up -- --out ./dev
-#     jq . dev/access.json                     # the address of port 8080
+#     vivarium up --file . dev --out ./dev
+#     open http://127.0.80.80:8080       # demo@example.com, password "password"
 #     vivarium down --out ./dev
 #
-# No gate and no sign-in: a Caddy on port 8080 signs every request in as
-# `demo`, the way the gate signs in a real user.
+# A real dex signs people in, as in production. The guest's forwards sit
+# on one fixed loopback address so the browser and the kernel agree on
+# every URL: inside the guest, all of 127.0.0.0/8 is the guest itself.
 {
   curl,
+  gnugrep,
+  coreutils,
   writers,
+  writeShellApplication,
+  writeText,
   vivarium,
 }:
 
+let
+  address = "127.0.80.80";
+  publicUrl = "http://${address}:8080";
+  issuer = "http://${address}:5556/dex";
+in
 vivarium.mkTest {
   name = "heycarl-dev";
 
@@ -22,29 +32,67 @@ vivarium.mkTest {
       vivarium.memory = "1536M";
       vivarium.forward = [
         {
+          inherit address;
           ports = [
             config.vivarium.sshPort
-            { guest = 8080; }
+            8080
+            5556
           ];
         }
       ];
       services.heycarl = {
         enable = true;
-        publicUrl = "http://localhost:8080";
+        inherit publicUrl;
+        oidc = {
+          inherit issuer;
+          clientSecretFile = writeText "client-secret" "dev-secret";
+        };
+      };
+      services.dex = {
+        enable = true;
+        settings = {
+          inherit issuer;
+          storage.type = "memory";
+          web.http = "0.0.0.0:5556";
+          enablePasswordDB = true;
+          oauth2.skipApprovalScreen = true;
+          staticPasswords = [
+            {
+              email = "demo@example.com";
+              # "password", from dex's example configuration.
+              hash = "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W";
+              username = "demo";
+              userID = "demo";
+            }
+          ];
+          staticClients = [
+            {
+              id = "hey";
+              name = "Hey Carl";
+              secret = "dev-secret";
+              redirectURIs = [ "${publicUrl}/auth/callback" ];
+            }
+          ];
+        };
       };
       services.caddy = {
         enable = true;
-        virtualHosts."http://:8080".extraConfig = ''
-          reverse_proxy unix/${config.services.heycarl.kernelSocket} {
-            header_up X-Forwarded-User demo
-            header_up X-Forwarded-Email demo@example.com
-            header_up X-Forwarded-Preferred-Username demo
-          }
-        '';
+        virtualHosts."http://:8080".extraConfig =
+          "reverse_proxy unix/${config.services.heycarl.kernelSocket}";
       };
       systemd.services.caddy.serviceConfig.SupplementaryGroups = [ "heycarl" ];
+      environment.variables.HEYCARL_PUBLIC_URL = publicUrl;
       environment.systemPackages = [
         curl
+        (writeShellApplication {
+          name = "heycarl-login";
+          runtimeInputs = [
+            curl
+            gnugrep
+            coreutils
+          ];
+          text = builtins.readFile ./vm-login.sh;
+        })
         (writers.writePython3Bin "heycarl-seed" {
           flakeIgnore = [ "E501" ];
         } (builtins.readFile ./dev-seed.py))
