@@ -67,9 +67,18 @@ def config(tmp_path: Path, plugin_dirs: list[str]) -> Config:
 
 
 @pytest.fixture
-async def postgrest(config: Config) -> AsyncIterator[None]:
+async def app(config: Config) -> AsyncIterator[FastAPI]:
+    application = create_app(config, plugins.load_plugins(config.plugins_file))
+    async with application.router.lifespan_context(application):
+        yield application
+
+
+# After `app`: the kernel migrates at startup and ends with a schema reload,
+# and PostgREST answers 503 while it reloads. Started after the migration,
+# it loads the schema once, before the first request.
+@pytest.fixture
+async def postgrest(config: Config, app: FastAPI) -> AsyncIterator[None]:
     loaded = plugins.load_plugins(config.plugins_file)
-    await migrations.migrate(config.database, loaded)
     schemas = ",".join([migrations.API_SCHEMA, *(p.schema for p in loaded)])
     env = {
         **os.environ,
@@ -107,20 +116,13 @@ async def _wait_for_socket(path: Path) -> None:
 
 
 @pytest.fixture
-async def app(config: Config, postgrest: None) -> AsyncIterator[FastAPI]:
-    application = create_app(config, plugins.load_plugins(config.plugins_file))
-    async with application.router.lifespan_context(application):
-        yield application
-
-
-@pytest.fixture
-def kernel(app: FastAPI) -> Kernel:
+def kernel(app: FastAPI, postgrest: None) -> Kernel:
     k: Kernel = app.state.kernel
     return k
 
 
 @pytest.fixture
-async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+async def client(app: FastAPI, postgrest: None) -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://kernel"
     ) as c:
