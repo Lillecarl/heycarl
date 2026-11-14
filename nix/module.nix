@@ -1,9 +1,9 @@
 # Hey Carl on one NixOS host: the kernel and PostgREST on unix sockets, and
 # the roles in the host's PostgreSQL.
 #
-# The gate in front reaches the kernel socket as a member of the `heycarl`
-# group. Every member can set X-Forwarded-User, so the group holds the gate
-# and nothing else. PostgREST's socket and the token key are the heycarl
+# The kernel signs people in itself, over OIDC, and checks every request,
+# so the `heycarl` group on its socket grants a way to talk HTTP to it and
+# nothing more. PostgREST's socket and the token key are the heycarl
 # user's alone.
 {
   config,
@@ -33,7 +33,14 @@ let
     HEYCARL_STATIC_DIR = "${cfg.frontend}/shell";
     HEYCARL_VAPID_KEY_FILE = "${stateDir}/vapid.pem";
     HEYCARL_PUBLIC_URL = cfg.publicUrl;
+    HEYCARL_OIDC_ISSUER = cfg.oidc.issuer;
+    HEYCARL_OIDC_CLIENT_ID = cfg.oidc.clientId;
+    # LoadCredential's copy: readable by this unit only, whoever owns the
+    # original.
+    HEYCARL_OIDC_CLIENT_SECRET_FILE = "/run/credentials/heycarl.service/oidc-client-secret";
+    HEYCARL_ALLOWED_EMAILS = lib.concatStringsSep "," cfg.allowedEmails;
   };
+  host = lib.head (lib.splitString "/" (lib.removePrefix "https://" cfg.publicUrl));
 
   hardening = {
     User = "heycarl";
@@ -83,6 +90,41 @@ in
       '';
     };
 
+    oidc = {
+      issuer = lib.mkOption {
+        type = lib.types.str;
+        example = "https://dex.example.com";
+        description = "The OpenID provider people sign in with.";
+      };
+      clientId = lib.mkOption {
+        type = lib.types.str;
+        default = "hey";
+        description = ''
+          This app's client at the provider. Its redirect URI is
+          `<publicUrl>/auth/callback`.
+        '';
+      };
+      clientSecretFile = lib.mkOption {
+        type = lib.types.path;
+        example = "/run/agenix/dex-client-hey";
+        description = "The client secret. Read through LoadCredential, never copied to the store.";
+      };
+    };
+
+    allowedEmails = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "someone@example.com" ];
+      description = ''
+        Who may sign in. Empty lets in everyone the provider signs in, which
+        is right only for a provider that knows nobody else.
+      '';
+    };
+
+    caddy.enable = lib.mkEnableOption ''
+      a Caddy virtual host for the publicUrl's host, proxying to the kernel
+      socket. Caddy gets the certificate'';
+
     database = lib.mkOption {
       type = lib.types.str;
       default = "heycarl";
@@ -93,11 +135,26 @@ in
       type = lib.types.str;
       readOnly = true;
       default = kernelSocket;
-      description = "Where the kernel listens, for the gate's upstream.";
+      description = "Where the kernel listens, for a reverse proxy.";
     };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = lib.hasPrefix "https://" cfg.publicUrl || !cfg.caddy.enable;
+        message = "services.heycarl.caddy needs an https publicUrl.";
+      }
+    ];
+
+    services.caddy = lib.mkIf cfg.caddy.enable {
+      enable = true;
+      virtualHosts.${host}.extraConfig = "reverse_proxy unix/${kernelSocket}";
+    };
+    systemd.services.caddy.serviceConfig.SupplementaryGroups = lib.mkIf cfg.caddy.enable [
+      "heycarl"
+    ];
+
     users.users.heycarl = {
       isSystemUser = true;
       group = "heycarl";
@@ -158,7 +215,8 @@ in
       serviceConfig = hardening // {
         ExecStartPre = "${pkgs.coreutils}/bin/rm -f ${kernelSocket}";
         ExecStart = "${lib.getExe cfg.package} serve --socket ${kernelSocket}";
-        # uvicorn creates the socket: 0660, so the gate's group can open it.
+        LoadCredential = [ "oidc-client-secret:${cfg.oidc.clientSecretFile}" ];
+        # uvicorn creates the socket: 0660, so the proxy's group can open it.
         UMask = "0007";
         Restart = "on-failure";
         RestartSec = 2;

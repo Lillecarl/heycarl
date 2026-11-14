@@ -12,31 +12,41 @@ NixOS host (hetztop), not on Kubernetes.
 ## Request path
 
 ```
-internet :443 -> Caddy (TLS) -> oauth2-proxy gate -> unix:/run/heycarl/kernel.sock
-                                                         kernel (FastAPI)
-                                                           -> unix:/run/heycarl/postgrest.sock
-                                                                PostgREST -> PostgreSQL
+internet :443 -> Caddy (TLS) -> unix:/run/heycarl/kernel.sock
+                                  kernel (FastAPI)
+                                    -> unix:/run/heycarl/postgrest.sock
+                                         PostgREST -> PostgreSQL
 ```
 
-- Caddy and the gate come from croshome `modules/nixos/gate.nix`. dex is the
-  identity provider.
+- The NixOS module sets up Caddy (`services.heycarl.caddy`). dex, from
+  croshome `modules/nixos/gate.nix`, is the identity provider.
 - The kernel and PostgREST listen only on unix sockets. Hetztop runs agents as
   local users, so a loopback port is not a trust boundary there. Socket file
   permissions are.
 
 ## Identity
 
-The gate is the only OIDC client. The SPA holds no token.
+The kernel is the OIDC client and checks every request. The SPA holds no
+token.
 
-- The gate signs the user in with dex, keeps the session in an HttpOnly cookie
-  and sends `X-Forwarded-User` and `X-Forwarded-Email` to the kernel.
-- The kernel trusts those headers because only the gate's group can open the
-  kernel socket.
-- This differs from Torg, where the SPA does PKCE and passes the IdP token on.
-  For one user behind a gate, the second sign-in adds nothing. Plugin
-  JavaScript also cannot read a cookie it never sees.
-- Session expiry: the gate answers `/api/*` with 401, not a redirect
-  (`--api-route`). The shell then reloads the page and the gate signs in again.
+- Sign-in: authorization code flow with PKCE, state and nonce
+  (`kernel/heycarl/oidc.py`). The kernel checks the ID token's signature
+  against dex's JWKS (fetched again when dex rotates keys), and its issuer,
+  audience, expiry and nonce. `allowedEmails` limits who gets in.
+- Sessions live in `heycarl_private.session`, keyed by the SHA-256 of a
+  random token. The browser holds the token in a `__Host-` cookie: HttpOnly,
+  Secure, SameSite=Lax. Logout deletes the row.
+- Deny by default (`kernel/heycarl/access.py`). A path is public or bearer
+  only when that file lists it; every other path needs a session. Without
+  one, `/api/*` answers 401 and a page redirects to sign-in. A path with a
+  `.` or `..` segment answers 400.
+- A request that changes state must carry `Origin` equal to `publicUrl`.
+  SameSite=Lax already keeps the cookie off cross-site POSTs; this holds
+  without it.
+- No request header names a person. The kernel never reads
+  `X-Forwarded-User`.
+- The kernel sets HSTS, `frame-ancestors 'none'`, nosniff and
+  `Referrer-Policy: same-origin` on every response.
 
 ## PostgREST tokens
 
@@ -102,9 +112,10 @@ Calendar sync and reminder delivery run with nobody signed in.
 ## Public routes
 
 Webhooks arrive with no session: 46elks call callbacks and Google Calendar
-push channels. The gate skips auth for `^/api/public/` and for the PWA
-manifest and icons. Every public route checks its own secret or signature.
-This is the one path past the gate, and it is narrow by intent.
+push channels. `access.py` lists `/api/public/` as public, with the PWA
+manifest, icons and service worker, and the sign-in endpoints. Every public
+route under `/api/public/` checks its own secret or signature. The list is
+narrow by intent.
 
 ## PWA
 

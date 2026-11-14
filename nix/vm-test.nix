@@ -10,15 +10,68 @@ testers.runNixOSTest {
       services.heycarl = {
         enable = true;
         publicUrl = "https://hey.example.com";
+        oidc = {
+          issuer = "http://127.0.0.1:5556/dex";
+          clientSecretFile = pkgs.writeText "client-secret" "test-secret";
+        };
+        allowedEmails = [
+          "alice@example.com"
+          "bob@example.com"
+        ];
       };
-      environment.systemPackages = [ pkgs.curl ];
-      # Stands in for the gate: a member of the socket group.
-      users.users.gate = {
+
+      services.dex = {
+        enable = true;
+        settings = {
+          issuer = "http://127.0.0.1:5556/dex";
+          storage.type = "memory";
+          web.http = "127.0.0.1:5556";
+          enablePasswordDB = true;
+          oauth2.skipApprovalScreen = true;
+          # "password", from dex's example configuration.
+          staticPasswords =
+            map
+              (name: {
+                email = "${name}@example.com";
+                hash = "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W";
+                username = name;
+                userID = name;
+              })
+              [
+                "alice"
+                "bob"
+                "eve"
+              ];
+          staticClients = [
+            {
+              id = "hey";
+              name = "Hey Carl";
+              secret = "test-secret";
+              redirectURIs = [ "https://hey.example.com/auth/callback" ];
+            }
+          ];
+        };
+      };
+
+      environment.systemPackages = [
+        pkgs.curl
+        (pkgs.writeShellApplication {
+          name = "heycarl-login";
+          runtimeInputs = [
+            pkgs.curl
+            pkgs.gnugrep
+            pkgs.coreutils
+          ];
+          text = builtins.readFile ./vm-login.sh;
+        })
+      ];
+      # Stands in for the reverse proxy: a member of the socket group.
+      users.users.proxy = {
         isSystemUser = true;
-        group = "gate";
+        group = "proxy";
         extraGroups = [ "heycarl" ];
       };
-      users.groups.gate = { };
+      users.groups.proxy = { };
       users.users.outsider = {
         isNormalUser = true;
       };
@@ -27,60 +80,82 @@ testers.runNixOSTest {
   testScript = ''
     import json
 
+    machine.wait_for_unit("dex.service")
     machine.wait_for_unit("heycarl.service")
     machine.wait_for_unit("heycarl-postgrest.service")
     machine.wait_for_file("/run/heycarl/kernel.sock")
 
-    def kernel(user, args):
+    def curl(args, user="proxy"):
         return machine.succeed(
-            f"runuser -u {user} -- curl -sf --unix-socket /run/heycarl/kernel.sock {args}"
+            f"runuser -u {user} -- curl -s --unix-socket /run/heycarl/kernel.sock {args}"
         )
 
-    as_alice = "-H 'X-Forwarded-User: alice'"
+    def status(args):
+        return curl(f"-o /dev/null -w '%{{http_code}}' {args}")
 
-    with subtest("the shell and the manifest are served"):
-        assert "<title>Hey Carl</title>" in kernel("gate", "http://hey/")
-        assert "<title>Hey Carl</title>" in kernel("gate", "http://hey/p/todos/heycarl-todos")
-        assert json.loads(kernel("gate", "http://hey/manifest.webmanifest"))["name"] == "Hey Carl"
-        kernel("gate", "http://hey/icons/icon-192.png -o /dev/null")
+    def login(name):
+        cookie = machine.succeed(f"runuser -u proxy -- heycarl-login {name}@example.com").strip()
+        return f"-H 'cookie: {cookie}' -H 'origin: https://hey.example.com'"
+
+    with subtest("nothing private answers without a session"):
+        assert status("http://hey/api/me") == "401"
+        assert status("-H 'x-forwarded-user: alice' http://hey/api/me") == "401"
+        assert status("http://hey/") == "302"
+        assert json.loads(curl("http://hey/manifest.webmanifest"))["name"] == "Hey Carl"
+        # A browser will not register a service worker behind a redirect.
+        assert status("http://hey/service-worker.js") == "200"
+        curl("-f http://hey/icons/icon-192.png -o /dev/null")
+
+    with subtest("signing in through dex"):
+        as_alice = login("alice")
+        as_bob = login("bob")
+        me = json.loads(curl(f"{as_alice} http://hey/api/me"))
+        assert me["email"] == "alice@example.com", me
+        machine.fail("runuser -u proxy -- heycarl-login eve@example.com")
+
+    with subtest("the shell is served to a session"):
+        assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/")
+        assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/p/todos/heycarl-todos")
 
     with subtest("an unknown API path is a 404, not the shell"):
-        machine.fail(
-            "runuser -u gate -- curl -sf --unix-socket /run/heycarl/kernel.sock http://hey/api/public/nope"
-        )
+        assert status(f"{as_alice} http://hey/api/nope") == "404"
 
     with subtest("plugins are listed and their modules served"):
-        plugins = json.loads(kernel("gate", f"{as_alice} http://hey/api/plugins"))
+        plugins = json.loads(curl(f"{as_alice} http://hey/api/plugins"))
         assert sorted(p["name"] for p in plugins) == ["crm", "reminders", "todos"], plugins
         for p in plugins:
-            kernel("gate", f"{as_alice} http://hey{p['frontend']['module']} -o /dev/null")
+            curl(f"-f {as_alice} 'http://hey{p['frontend']['module']}' -o /dev/null")
 
     with subtest("data round-trips through PostgREST with row-level security"):
-        kernel(
-            "gate",
-            f"{as_alice} -H 'content-type: application/json' "
-            "-d '{\"title\": \"from the vm\"}' http://hey/api/data/todos/todo",
+        curl(
+            f"-f {as_alice} -H 'content-type: application/json' "
+            "-d '{\"title\": \"from the vm\"}' http://hey/api/data/todos/todo"
         )
-        todos = json.loads(kernel("gate", f"{as_alice} http://hey/api/data/todos/todo"))
+        todos = json.loads(curl(f"{as_alice} http://hey/api/data/todos/todo"))
         assert [t["title"] for t in todos] == ["from the vm"], todos
-        bob = json.loads(kernel("gate", "-H 'X-Forwarded-User: bob' http://hey/api/data/todos/todo"))
-        assert bob == [], bob
+        assert json.loads(curl(f"{as_bob} http://hey/api/data/todos/todo")) == []
+
+    with subtest("a write from another origin is refused"):
+        cookie_only = as_alice.split(" -H 'origin")[0]
+        assert status(
+            f"{cookie_only} -H 'origin: https://evil.example' -H 'content-type: application/json' "
+            "-d '{\"title\": \"x\"}' http://hey/api/data/todos/todo"
+        ) == "403"
 
     with subtest("a birthday in the CRM makes a reminder"):
         post = f"{as_alice} -H 'content-type: application/json' -H 'prefer: return=representation'"
         [anna] = json.loads(
-            kernel("gate", f"{post} -d '{{\"first_name\": \"Anna\"}}' http://hey/api/data/crm/contact")
+            curl(f"{post} -d '{{\"first_name\": \"Anna\"}}' http://hey/api/data/crm/contact")
         )
-        kernel(
-            "gate",
-            f"{post} -d '{{\"contact_id\": {anna['id']}, \"month\": 3, \"day\": 14}}' "
-            "http://hey/api/data/crm/important_date",
+        curl(
+            f"-f {post} -d '{{\"contact_id\": {anna['id']}, \"month\": 3, \"day\": 14}}' "
+            "http://hey/api/data/crm/important_date"
         )
-        [rem] = json.loads(kernel("gate", f"{as_alice} http://hey/api/data/reminders/reminder"))
+        [rem] = json.loads(curl(f"{as_alice} http://hey/api/data/reminders/reminder"))
         assert rem["title"] == "Anna's birthday", rem
 
     with subtest("the kernel made a VAPID key and serves its public half"):
-        key = json.loads(kernel("gate", f"{as_alice} http://hey/api/push/key"))["key"]
+        key = json.loads(curl(f"{as_alice} http://hey/api/push/key"))["key"]
         assert len(key) == 87, key
         machine.succeed("test $(stat -c %a /var/lib/heycarl/vapid.pem) = 600")
 
@@ -89,15 +164,19 @@ testers.runNixOSTest {
             "runuser -u outsider -- curl -sf --unix-socket /run/heycarl/kernel.sock http://hey/healthz"
         )
 
-    with subtest("a restart migrates nothing and keeps the data"):
+    with subtest("a restart keeps sessions and data"):
         # A switch restarts setup too; it must leave the kernel its files.
         machine.succeed("systemctl restart heycarl-setup.service")
         machine.succeed("systemctl restart heycarl.service")
         machine.wait_for_file("/run/heycarl/kernel.sock")
         machine.wait_until_succeeds(
-            "runuser -u gate -- curl -sf --unix-socket /run/heycarl/kernel.sock http://hey/healthz"
+            "runuser -u proxy -- curl -sf --unix-socket /run/heycarl/kernel.sock http://hey/healthz"
         )
-        todos = json.loads(kernel("gate", f"{as_alice} http://hey/api/data/todos/todo"))
+        todos = json.loads(curl(f"{as_alice} http://hey/api/data/todos/todo"))
         assert len(todos) == 1, todos
+
+    with subtest("logging out ends the session"):
+        assert status(f"-X POST {as_alice} http://hey/auth/logout") == "204"
+        assert status(f"{as_alice} http://hey/api/me") == "401"
   '';
 }
