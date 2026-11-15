@@ -8,6 +8,7 @@ the consent page, where a signed-in person approves it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -55,6 +56,8 @@ UNUSED_CLIENT_LIFETIME: Final = timedelta(days=1)
 # /register is open to anyone. Clients nobody consented to stop at this
 # many until the purge drops them: a flood fills no disk.
 UNUSED_CLIENT_LIMIT: Final = 50
+# Claude's registration is under 1 KiB; the SDK reads any size of body.
+MAX_CLIENT_INFO: Final = 16 * 1024
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
 
 
@@ -141,7 +144,16 @@ class Provider:
                     "invalid_redirect_uri",
                     "a redirect URI must be https, or http to a loopback address",
                 )
-        async with self._pool().connection() as conn:
+        info = client_info.model_dump(mode="json")
+        if len(json.dumps(info)) > MAX_CLIENT_INFO:
+            raise RegistrationError(
+                "invalid_client_metadata", "the registration is too large"
+            )
+        async with self._pool().connection() as conn, conn.transaction():
+            # Without the lock, concurrent requests each count below the limit.
+            await conn.execute(
+                "lock table heycarl_private.oauth_client in share row exclusive mode"
+            )
             cur = await conn.execute(
                 "insert into heycarl_private.oauth_client (client_id, info)"
                 " select %s, %s where (select count(*)"
@@ -150,7 +162,7 @@ class Provider:
                 "   where g.client_id = c.client_id)) < %s",
                 (
                     client_info.client_id,
-                    Jsonb(client_info.model_dump(mode="json")),
+                    Jsonb(info),
                     self.unused_client_limit,
                 ),
             )

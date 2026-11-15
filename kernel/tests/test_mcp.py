@@ -586,6 +586,19 @@ async def test_registrations_nobody_approved_are_capped(
     assert r.status_code == 200, r.text
 
 
+async def test_a_huge_registration_is_refused(site: httpx.AsyncClient) -> None:
+    r = await site.post(
+        "/register",
+        json={
+            "redirect_uris": [REDIRECT],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "client_name": "x" * 100_000,
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "too large" in r.text
+
+
 async def test_a_grant_carries_the_scopes_the_person_chose(
     site: httpx.AsyncClient,
 ) -> None:

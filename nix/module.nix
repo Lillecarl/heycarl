@@ -183,7 +183,14 @@ in
 
     services.caddy = lib.mkIf cfg.caddy.enable {
       enable = true;
-      virtualHosts.${host}.extraConfig = "reverse_proxy unix/${kernelSocket}";
+      # /register and /token parse a body before any check; the largest real
+      # body is a plugin's data write.
+      virtualHosts.${host}.extraConfig = ''
+        request_body {
+          max_size 1MB
+        }
+        reverse_proxy unix/${kernelSocket}
+      '';
     };
     systemd.services.caddy.serviceConfig.SupplementaryGroups = lib.mkIf cfg.caddy.enable [
       "heycarl"
