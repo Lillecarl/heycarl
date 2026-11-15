@@ -48,6 +48,8 @@ REQUEST_LIFETIME: Final = timedelta(minutes=10)
 CODE_LIFETIME: Final = timedelta(minutes=5)
 ACCESS_LIFETIME: Final = timedelta(hours=1)
 REFRESH_LIFETIME: Final = timedelta(days=30)
+# From consent, however often the client refreshes; then the person consents again.
+GRANT_LIFETIME: Final = timedelta(days=90)
 # A client nobody consented to is dropped after this.
 UNUSED_CLIENT_LIFETIME: Final = timedelta(days=1)
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
@@ -205,9 +207,9 @@ class Provider:
                 )
             cur = await conn.execute(
                 "insert into heycarl_private.oauth_grant"
-                " (client_id, sub, scopes, resource) values (%s, %s, %s, %s)"
-                " returning id",
-                (client_id, sub, scopes, params.resource),
+                " (client_id, sub, scopes, resource, expires_at)"
+                " values (%s, %s, %s, %s, now() + %s) returning id",
+                (client_id, sub, scopes, params.resource, GRANT_LIFETIME),
             )
             grant = await cur.fetchone()
             if grant is None:
@@ -239,7 +241,8 @@ class Provider:
                 " extract(epoch from c.expires_at)::float8"
                 " from heycarl_private.oauth_code c"
                 " join heycarl_private.oauth_grant g on g.id = c.grant_id"
-                " where c.code_hash = %s and g.client_id = %s",
+                " where c.code_hash = %s and g.client_id = %s"
+                " and g.expires_at > now()",
                 (token_hash(authorization_code), client.client_id),
             )
             row = await cur.fetchone()
@@ -278,7 +281,10 @@ class Provider:
         self, client: OAuthClientInformationFull, refresh_token: str
     ) -> Refresh | None:
         found = await self._load(refresh_token, Kind.REFRESH)
-        if found is None or found.client_id != client.client_id:
+        if found is None:
+            await self._end_if_spent(refresh_token)
+            return None
+        if found.client_id != client.client_id:
             return None
         return Refresh(
             token=found.token,
@@ -298,11 +304,17 @@ class Provider:
         async with self._pool().connection() as conn:
             cur = await conn.execute(
                 "delete from heycarl_private.oauth_token"
-                " where token_hash = %s and kind = %s returning grant_id",
+                " where token_hash = %s and kind = %s returning expires_at",
                 (token_hash(refresh_token.token), Kind.REFRESH),
             )
-            if await cur.fetchone() is None:
+            row = await cur.fetchone()
+            if row is None:
                 raise TokenError("invalid_grant", "refresh token already used")
+            await conn.execute(
+                "insert into heycarl_private.oauth_spent"
+                " (token_hash, grant_id, expires_at) values (%s, %s, %s)",
+                (token_hash(refresh_token.token), refresh_token.grant_id, row[0]),
+            )
             # Rotation: the grant's older access tokens end here too.
             await conn.execute(
                 "delete from heycarl_private.oauth_token where grant_id = %s",
@@ -320,6 +332,17 @@ class Provider:
                 (token.grant_id,),
             )
 
+    async def _end_if_spent(self, refresh_token: str) -> None:
+        """A rotated refresh token came back: a thief or the client holds a
+        copy, and the server cannot tell which. Both lose the grant."""
+        async with self._pool().connection() as conn:
+            await conn.execute(
+                "delete from heycarl_private.oauth_grant where id in"
+                " (select grant_id from heycarl_private.oauth_spent"
+                "  where token_hash = %s)",
+                (token_hash(refresh_token),),
+            )
+
     async def _load(self, token: str, kind: Kind) -> Access | None:
         async with self._pool().connection() as conn:
             cur = await conn.execute(
@@ -327,7 +350,8 @@ class Provider:
                 " extract(epoch from t.expires_at)::bigint"
                 " from heycarl_private.oauth_token t"
                 " join heycarl_private.oauth_grant g on g.id = t.grant_id"
-                " where t.token_hash = %s and t.kind = %s and t.expires_at > now()",
+                " where t.token_hash = %s and t.kind = %s and t.expires_at > now()"
+                " and g.expires_at > now()",
                 (token_hash(token), kind),
             )
             row = await cur.fetchone()
@@ -353,8 +377,9 @@ async def _issue(conn: AsyncConnection, grant_id: int, scopes: list[str]) -> OAu
         await conn.execute(
             "insert into heycarl_private.oauth_token"
             " (token_hash, grant_id, kind, scopes, expires_at)"
-            " values (%s, %s, %s, %s, now() + %s)",
-            (token_hash(token), grant_id, kind, scopes, lifetime),
+            " select %s, id, %s, %s, least(now() + %s, expires_at)"
+            " from heycarl_private.oauth_grant where id = %s",
+            (token_hash(token), kind, scopes, lifetime, grant_id),
         )
     return OAuthToken(
         access_token=access,
@@ -382,7 +407,8 @@ async def grants(pool: AsyncConnectionPool, sub: str) -> list[Grant]:
             "select g.id, c.info, g.scopes, g.created_at"
             " from heycarl_private.oauth_grant g"
             " join heycarl_private.oauth_client c using (client_id)"
-            " where g.sub = %s and exists (select from heycarl_private.oauth_token t"
+            " where g.sub = %s and g.expires_at > now()"
+            " and exists (select from heycarl_private.oauth_token t"
             "   where t.grant_id = g.id and t.expires_at > now())"
             " order by g.created_at desc",
             (sub,),
@@ -407,7 +433,13 @@ async def revoke_grant(pool: AsyncConnectionPool, sub: str, grant_id: int) -> bo
 
 async def purge(pool: AsyncConnectionPool) -> None:
     async with pool.connection() as conn:
-        for table in ("oauth_request", "oauth_code", "oauth_token"):
+        for table in (
+            "oauth_request",
+            "oauth_code",
+            "oauth_token",
+            "oauth_spent",
+            "oauth_grant",
+        ):
             await conn.execute(
                 f"delete from heycarl_private.{table} where expires_at < now()"
             )

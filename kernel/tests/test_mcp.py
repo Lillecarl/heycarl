@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import httpx
+import psycopg
 import pytest
 import uvicorn
 from mcp import ClientSession, types
@@ -29,7 +30,7 @@ from mcp.shared.exceptions import McpError
 from pydantic import AnyUrl
 from sse_starlette.sse import AppStatus
 
-from .conftest import PUBLIC_URL, as_user, needs_database
+from .conftest import PUBLIC_URL, _conninfo, as_user, needs_database
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -616,24 +617,57 @@ async def test_a_code_works_once(site: httpx.AsyncClient) -> None:
     assert again.json()["error"] == "invalid_grant"
 
 
-async def test_refresh_rotates_and_revoke_ends_the_grant(
+def refreshing(client: dict[str, str], token: str) -> dict[str, str]:
+    return {
+        "grant_type": "refresh_token",
+        "refresh_token": token,
+        "client_id": client["client_id"],
+        "client_secret": client["client_secret"],
+    }
+
+
+async def test_a_reused_refresh_token_ends_the_grant(
     site: httpx.AsyncClient,
 ) -> None:
     client, r = await tokens_for(site)
     first = r.json()
-    refresh = {
-        "grant_type": "refresh_token",
-        "refresh_token": first["refresh_token"],
-        "client_id": client["client_id"],
-        "client_secret": client["client_secret"],
-    }
-    r = await site.post("/token", data=refresh)
+    r = await site.post("/token", data=refreshing(client, first["refresh_token"]))
     assert r.status_code == 200, r.text
     second = r.json()
     assert second["access_token"] != first["access_token"]
-    # The old refresh token is used up.
-    assert (await site.post("/token", data=refresh)).status_code == 400
+    mcp = {"authorization": f"Bearer {second['access_token']}"}
+    assert (await site.post("/mcp", json={}, headers=mcp)).status_code != 401
 
+    reused = await site.post("/token", data=refreshing(client, first["refresh_token"]))
+    assert reused.status_code == 400
+    # The thief or the client: the server cannot tell, so neither keeps it.
+    assert (await site.post("/mcp", json={}, headers=mcp)).status_code == 401
+    r = await site.post("/token", data=refreshing(client, second["refresh_token"]))
+    assert r.status_code == 400
+
+
+async def test_a_grant_ends_after_its_lifetime(site: httpx.AsyncClient) -> None:
+    client, r = await tokens_for(site, sub="erin-sub")
+    tokens = r.json()
+    async with await psycopg.AsyncConnection.connect(
+        _conninfo("heycarl_owner"), autocommit=True
+    ) as conn:
+        await conn.execute(
+            "update heycarl_private.oauth_grant set expires_at = now()"
+            " where sub = 'erin-sub'"
+        )
+    mcp = {"authorization": f"Bearer {tokens['access_token']}"}
+    assert (await site.post("/mcp", json={}, headers=mcp)).status_code == 401
+    r = await site.post("/token", data=refreshing(client, tokens["refresh_token"]))
+    assert r.status_code == 400
+    erin = as_user("erin-sub")
+    assert (await site.get("/api/oauth/grants", headers=erin)).json() == []
+
+
+async def test_revoke_ends_the_grant(site: httpx.AsyncClient) -> None:
+    client, r = await tokens_for(site)
+    second = r.json()
+    refresh = refreshing(client, second["refresh_token"])
     r = await site.post(
         "/revoke",
         data={
@@ -643,8 +677,7 @@ async def test_refresh_rotates_and_revoke_ends_the_grant(
         },
     )
     assert r.status_code == 200, r.text
-    again = {**refresh, "refresh_token": second["refresh_token"]}
-    assert (await site.post("/token", data=again)).status_code == 400
+    assert (await site.post("/token", data=refresh)).status_code == 400
 
 
 async def test_a_token_is_bound_to_its_client(site: httpx.AsyncClient) -> None:
