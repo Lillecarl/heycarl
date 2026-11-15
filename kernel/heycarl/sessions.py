@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 SESSION_LIFETIME: Final = timedelta(days=30)
 LOGIN_LIFETIME: Final = timedelta(minutes=10)
+PENDING_LOGIN_LIMIT: Final = 200
 TOKEN_BYTES: Final = 32
 
 
@@ -50,27 +51,37 @@ class Login:
     next: str
 
 
-async def start_login(pool: AsyncConnectionPool, next_path: str) -> Login:
+async def start_login(
+    pool: AsyncConnectionPool, next_path: str, limit: int = PENDING_LOGIN_LIMIT
+) -> Login | None:
+    """None when `limit` logins are already pending: anyone may start one."""
     login = Login(
         state=new_token(),
         nonce=new_token(),
         code_verifier=new_token(),
         next=next_path,
     )
-    async with pool.connection() as conn:
+    async with pool.connection() as conn, conn.transaction():
+        # Without the lock, concurrent requests each count below the limit.
         await conn.execute(
+            "lock table heycarl_private.login in share row exclusive mode"
+        )
+        await conn.execute("delete from heycarl_private.login where expires_at < now()")
+        cur = await conn.execute(
             "insert into heycarl_private.login"
             " (state_hash, nonce, code_verifier, next, expires_at)"
-            " values (%s, %s, %s, %s, now() + %s)",
+            " select %s, %s, %s, %s, now() + %s"
+            " where (select count(*) from heycarl_private.login) < %s",
             (
                 token_hash(login.state),
                 login.nonce,
                 login.code_verifier,
                 login.next,
                 LOGIN_LIFETIME,
+                limit,
             ),
         )
-    return login
+    return login if cur.rowcount == 1 else None
 
 
 async def finish_login(pool: AsyncConnectionPool, state: str) -> Login | None:

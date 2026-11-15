@@ -39,6 +39,8 @@ from .conftest import PUBLIC_URL, as_user, needs_database
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from fastapi import FastAPI
+
 pytestmark = [pytest.mark.anyio]
 CLIENT_ID = "hey"
 CLIENT_SECRET = "client-secret"
@@ -463,6 +465,7 @@ def test_safe_next() -> None:
         "https://e.x",
         "e.x",
         "javascript:alert(1)",
+        "/" + "x" * 5000,
     ):
         assert safe_next(evil) == "/"
 
@@ -486,6 +489,18 @@ async def test_the_gate_refuses_every_websocket() -> None:
         await gate({"type": "websocket", "path": path, "headers": []}, receive, send)
     assert reached == []
     assert sent == [{"type": "websocket.close", "code": 1008}] * 3
+
+
+@needs_database
+async def test_pending_logins_are_capped(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    app.state.pending_login_limit = 0
+    refused = await client.get("/auth/login")
+    assert refused.status_code == 503
+    assert "set-cookie" not in refused.headers
+    app.state.pending_login_limit = 10_000
+    assert (await client.get("/auth/login")).status_code == 302
 
 
 def test_pkce_matches_rfc_7636() -> None:

@@ -22,7 +22,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
@@ -253,6 +253,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         lambda: app.state.pool, config.public_url, config.allowed_emails
     )
     app.state.oauth = provider
+    app.state.pending_login_limit = sessions.PENDING_LOGIN_LIMIT
     completions = mcpserver.Completions()
     server = mcpserver.build(provider, completions)
 
@@ -262,7 +263,17 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
 
     @app.get("/auth/login", include_in_schema=False)
     async def login(request: Request, next: str | None = None) -> Response:
-        attempt = await sessions.start_login(request.app.state.pool, safe_next(next))
+        attempt = await sessions.start_login(
+            request.app.state.pool,
+            safe_next(next),
+            request.app.state.pending_login_limit,
+        )
+        if attempt is None:
+            return JSONResponse(
+                {"detail": "too many sign-ins in progress; try again soon"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                headers={"retry-after": "60", "cache-control": "no-store"},
+            )
         client: oidc.Client = request.app.state.oidc
         url = oidc.authorization_url(
             await client.endpoints(),

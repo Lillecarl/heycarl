@@ -56,6 +56,7 @@ PUBLIC_EXACT: Final = frozenset(
 PUBLIC_PREFIXES: Final = ("/icons/", "/api/public/")
 BEARER_EXACT: Final = frozenset({"/mcp"})
 SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+MAX_NEXT: Final = 2048
 
 
 def access_for(path: str) -> Access | None:
@@ -71,7 +72,12 @@ def access_for(path: str) -> Access | None:
 
 def safe_next(value: str | None) -> str:
     """A path on this site to go back to after login, never another site."""
-    if not value or not value.startswith("/") or value.startswith(("//", "/\\")):
+    if (
+        not value
+        or len(value) > MAX_NEXT
+        or not value.startswith("/")
+        or value.startswith(("//", "/\\"))
+    ):
         return "/"
     parts = urlsplit(value)
     if parts.scheme or parts.netloc:
