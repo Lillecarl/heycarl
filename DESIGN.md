@@ -234,26 +234,39 @@ Decided:
   `heycarl_private`. The functions below check `owner_sub` against the
   caller.
 - Actor: the kernel adds a `via` claim to the PostgREST token: `app` for
-  a browser session, `mcp:<client_id>` for an MCP tool, `kernel` for a
-  plugin's own code. `Minter.user()` requires it. A job has no person
-  and no claim. The trigger records it.
+  a browser session, `mcp:<client_id>` for an MCP tool.
+  `Minter.user()` requires it. A job has no person and no claim. The
+  trigger records it.
 - The functions are SECURITY DEFINER with dynamic SQL: table names
   quoted with `%I` and checked against the tracked list, a pinned
-  `search_path`, and a refusal when no person calls.
+  `search_path`, and a refusal when no person calls. Their helpers live
+  in `heycarl_history`, which the kernel drops and recreates on every
+  start like `heycarl`.
 - Trash: the deleted records that have not come back, grouped by
   transaction. Deleting a contact cascades to its notes, dates and
   fields, and to the date's reminder; they share a transaction, so they
   are one trash entry and come back together.
-- Restore takes a version id. A live record gets that state back, except
-  its `ignore` columns: an old reminder state must not send it again. A
-  deleted record comes back with its whole trash entry, whole, under its
-  old ids (`OVERRIDING SYSTEM VALUE`), so links to it hold.
-- Restore puts in what fits and reports the rest. It makes passes over
-  the entry's rows, each insert in a savepoint, retrying a row whose
-  parent is not back yet, and stops when a pass adds nothing. A row
-  already live is done. A row that still fails stays in the trash: its
-  parent was deleted later, or a new row took its unique name. Restoring
-  the entry again after the cause is gone adds it.
+- Undo takes a version id and reverses the whole transaction that made
+  it: every record it touched goes back to its state before. A record it
+  made is deleted (to the trash), one it deleted comes back under its
+  old ids (`OVERRIDING SYSTEM VALUE`) so links to it hold, and one it
+  changed gets the earlier state. One call undoes a PATCH over every
+  note; per-record restore would take one call per row.
+- Undo never overwrites later work: a record changed again since is
+  left alone and reported in `changed_since`.
+- Undo puts in what fits and reports the rest. It makes passes, each
+  step in a savepoint, retrying a row whose parent is not back yet, and
+  stops when a pass adds nothing. A row that still fails stays as it is:
+  its parent was deleted later, or a new row took its unique name.
+  Undoing again after the cause is gone finishes it.
+- Restore takes a version id and puts that one record back to that
+  state; a trash entry's id brings back the whole entry (an undo of its
+  delete). Restoring an old delete of a record that came back since is a
+  409, not a silent nothing.
+- A live record never gets its `ignore` columns back. And a restore
+  marks its transaction (`heycarl.restoring`), so the reminders plugin
+  does not re-arm a reminder whose old time comes back: restoring a
+  sent reminder's earlier time must not send it again.
 - A stored row may be older than its table. Restore writes only the
   columns both have, so a column added since gets its default, and one
   dropped since is left out.
@@ -263,15 +276,16 @@ Decided:
   records. It needs `via = app`, checked in the database. MCP has no
   purge tool and the generic tool never reaches the core scope, so a
   token minted for MCP cannot purge.
-- MCP gets `history`, `trash` (read) and `restore` (write), as tools of
-  their own that call the core functions; the generic tool still never
-  reaches core.
+- MCP gets `history`, `trash` (read), `restore` and `undo` (write), as
+  tools of their own that call the core functions; the generic tool
+  still never reaches core. A read-only client sees history, deleted
+  records and edited-out text included: it is the person's own data.
 - The test: through MCP with a `write` token, build a contact with a
   field, note, tag, activity, relationship, date and reminder; delete on
   every table; try the purge function and the version table; restore;
   and compare the whole graph with the original.
 - The app gets a History page: recent changes, with who made them, and
-  the trash. Restore and purge from there.
+  the trash. Undo, restore and purge from there.
 - Nothing expires by itself. The trash empties when the person empties
   it: a deletion nobody noticed for months is the case this is for.
 
@@ -287,6 +301,28 @@ Costs, accepted:
 - Turning a date's reminder off deletes the reminder, so it lands in the
   trash as its own entry. Restoring it brings back a reminder the date
   no longer links to.
+- A pending reminder restored from the trash after its time is sent at
+  once: it never went out.
+- A tracked table is identified by OID. A migration that drops and
+  recreates a tracked table orphans its history; alter it instead.
+
+Found in review after the build, and open:
+
+- A client can flood the trash with junk entries. "Empty the trash"
+  then takes the real ones with it, so the person must purge one entry
+  at a time. A purge by `via` (everything one client deleted) would fix
+  it.
+- Storage has no limit per person, and `todo.notes` and
+  `reminder.body` have no length check. A client can write without end;
+  every version is a full row. It destroys nothing, but a full disk
+  stops the database. A quota per owner is the fix.
+- Any request that carries `via = app` may purge, so one script
+  injection in any plugin frontend could empty the trash. The CSP is the
+  barrier. A step-up confirmation for purge (a single-use token from the
+  kernel) would add a second.
+- `track()` does not refuse a table whose key columns `heycarl_user`
+  may update. A key change would leave a record neither live nor in the
+  trash. No table allows it today.
 
 ## Security
 
@@ -320,8 +356,9 @@ Closed:
 Open:
 
 - A client can approve its own elicitation, so confirmation guards
-  against model mistakes, not a hostile client. A trash the person
-  empties in the app would.
+  against model mistakes, not a hostile client. History and trash (see
+  above) now make every write undoable, so a hostile client costs work,
+  not data; the open items there remain.
 
 ## Open questions
 
