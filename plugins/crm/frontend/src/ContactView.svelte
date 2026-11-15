@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import Related from '@heycarl/sdk/Related.svelte';
 	import Avatar from './Avatar.svelte';
 	import {
 		ACTIVITY_KINDS,
@@ -457,6 +458,10 @@
 				<button type="submit">Add</button>
 			</form>
 		{/if}
+	</section>
+
+	<section>
+		<Related scope={SCOPE} table="contact" key={{ id: c.id }} />
 	</section>
 
 	<section>

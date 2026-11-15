@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import Related from '@heycarl/sdk/Related.svelte';
 
 	interface Todo {
 		id: number;
@@ -15,6 +16,7 @@
 	let todos = $state<Todo[]>([]);
 	let title = $state('');
 	let error = $state<string | null>(null);
+	let open = $state<number | null>(null);
 
 	async function load(): Promise<void> {
 		todos = await data<Todo[]>('todos', 'todo?order=done_at.nullsfirst,due.nullslast,id');
@@ -61,12 +63,25 @@
 
 <ul>
 	{#each todos as todo (todo.id)}
-		<li class:done={todo.done_at}>
-			<label>
-				<input type="checkbox" checked={!!todo.done_at} onchange={() => toggle(todo)} />
-				{todo.title}
-			</label>
-			<button class="remove" onclick={() => remove(todo)} aria-label="Delete">×</button>
+		<li>
+			<div class="row" class:done={todo.done_at}>
+				<label>
+					<input type="checkbox" checked={!!todo.done_at} onchange={() => toggle(todo)} />
+					{todo.title}
+				</label>
+				<span>
+					<button
+						class="remove"
+						aria-label="Related"
+						aria-expanded={open === todo.id}
+						onclick={() => (open = open === todo.id ? null : todo.id)}>🔗</button
+					>
+					<button class="remove" onclick={() => remove(todo)} aria-label="Delete">×</button>
+				</span>
+			</div>
+			{#if open === todo.id}
+				<Related scope="todos" table="todo" key={{ id: todo.id }} />
+			{/if}
 		</li>
 	{/each}
 </ul>
@@ -86,9 +101,11 @@
 		padding: 0;
 	}
 	li {
+		padding: 0.5rem 0;
+	}
+	.row {
 		display: flex;
 		justify-content: space-between;
-		padding: 0.5rem 0;
 	}
 	.done {
 		opacity: 0.5;

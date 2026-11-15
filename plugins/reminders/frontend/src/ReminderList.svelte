@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import Related from '@heycarl/sdk/Related.svelte';
 
 	interface Reminder {
 		id: number;
@@ -17,6 +18,7 @@
 	let title = $state('');
 	let when = $state(inAnHour());
 	let error = $state<string | null>(null);
+	let open = $state<number | null>(null);
 
 	// datetime-local wants local time without a zone.
 	function inAnHour(): string {
@@ -75,7 +77,16 @@
 			<span class="when">{format.format(new Date(r.due_at))}</span>
 			<span class="what" title={r.last_error ?? ''}>{r.title}</span>
 			<span class="state">{r.state}</span>
+			<button
+				class="remove"
+				aria-label="Related"
+				aria-expanded={open === r.id}
+				onclick={() => (open = open === r.id ? null : r.id)}>🔗</button
+			>
 			<button class="remove" onclick={() => remove(r)} aria-label="Delete">×</button>
+			{#if open === r.id}
+				<div class="related"><Related scope="reminders" table="reminder" key={{ id: r.id }} /></div>
+			{/if}
 		</li>
 	{/each}
 </ul>
@@ -99,7 +110,7 @@
 	}
 	li {
 		display: grid;
-		grid-template-columns: auto 1fr auto auto;
+		grid-template-columns: auto 1fr auto auto auto;
 		gap: 0.75rem;
 		align-items: center;
 		padding: 0.5rem 0;
@@ -123,5 +134,8 @@
 	}
 	.error {
 		color: var(--hc-error, red);
+	}
+	.related {
+		grid-column: 1 / -1;
 	}
 </style>
