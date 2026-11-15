@@ -203,6 +203,91 @@ custom connectors) and local agents. Decided:
   instructions: notes are free text.
 - Not yet built: resource subscriptions and tasks.
 
+## History and trash
+
+Every change to a person's data keeps the state before it. A delete goes
+to a trash, and only the person empties it, in the app. Then neither a
+model mistake nor a hostile MCP client can destroy data: the worst a
+client with `write` can do is make work to undo.
+
+Decided:
+
+- One table, `heycarl_private.version`, for every plugin. A row is one
+  state of one record: table, primary key as jsonb (join tables have a
+  composite key, `preference` is keyed by `owner_sub`), the whole row as
+  jsonb, the operation, the time, the transaction and the actor. Insert
+  and update store the new state; delete stores the last state. So a
+  record's versions are every state it had, and the newest is the live
+  row. A transaction is `(pg_current_xact_id(), now())`: an xid alone
+  repeats after a dump and restore.
+- A plugin opts a table in from its migration:
+  `select heycarl_sdk.track('contact', ignore => array['updated_at'])`.
+  That adds an AFTER trigger and stores a version of each existing row.
+  `ignore` names bookkeeping columns: a change to them alone makes no
+  version (reminder delivery state, `reminder_id`). The table needs
+  `owner_sub` and a primary key. Shared tables (`relationship_kind`) and
+  core tables (push subscriptions) are not tracked. A test fails when
+  `heycarl_user` may update or delete in a plugin table that is not
+  tracked: an untracked table is a hole, and the next plugin would open
+  one silently.
+- The trigger is SECURITY DEFINER: no API role reads or writes
+  `heycarl_private`. The functions below check `owner_sub` against the
+  caller.
+- Actor: the kernel adds a `via` claim to the PostgREST token: `app` for
+  a browser session, `mcp:<client_id>` for an MCP tool, `kernel` for a
+  plugin's own code. `Minter.user()` requires it. A job has no person
+  and no claim. The trigger records it.
+- The functions are SECURITY DEFINER with dynamic SQL: table names
+  quoted with `%I` and checked against the tracked list, a pinned
+  `search_path`, and a refusal when no person calls.
+- Trash: the deleted records that have not come back, grouped by
+  transaction. Deleting a contact cascades to its notes, dates and
+  fields, and to the date's reminder; they share a transaction, so they
+  are one trash entry and come back together.
+- Restore takes a version id. A live record gets that state back, except
+  its `ignore` columns: an old reminder state must not send it again. A
+  deleted record comes back with its whole trash entry, whole, under its
+  old ids (`OVERRIDING SYSTEM VALUE`), so links to it hold.
+- Restore puts in what fits and reports the rest. It makes passes over
+  the entry's rows, each insert in a savepoint, retrying a row whose
+  parent is not back yet, and stops when a pass adds nothing. A row
+  already live is done. A row that still fails stays in the trash: its
+  parent was deleted later, or a new row took its unique name. Restoring
+  the entry again after the cause is gone adds it.
+- A stored row may be older than its table. Restore writes only the
+  columns both have, so a column added since gets its default, and one
+  dropped since is left out.
+- A restore is a change like any other, so it has a version and can be
+  undone.
+- Purge: deleting a trash entry for good removes every version of its
+  records. It needs `via = app`, checked in the database. MCP has no
+  purge tool and the generic tool never reaches the core scope, so a
+  token minted for MCP cannot purge.
+- MCP gets `history`, `trash` (read) and `restore` (write), as tools of
+  their own that call the core functions; the generic tool still never
+  reaches core.
+- The test: through MCP with a `write` token, build a contact with a
+  field, note, tag, activity, relationship, date and reminder; delete on
+  every table; try the purge function and the version table; restore;
+  and compare the whole graph with the original.
+- The app gets a History page: recent changes, with who made them, and
+  the trash. Restore and purge from there.
+- Nothing expires by itself. The trash empties when the person empties
+  it: a deletion nobody noticed for months is the case this is for.
+
+Costs, accepted:
+
+- Text the person edits out stays in the history until they purge the
+  record. The History page says so.
+- Storage grows with every edit. The data is small: one person's
+  contacts and notes.
+- A restored date whose occurrence has passed may get a second
+  reminder: the trigger makes one for the next occurrence, and the old
+  one comes back from the trash.
+- Turning a date's reminder off deletes the reminder, so it lands in the
+  trash as its own entry. Restoring it brings back a reminder the date
+  no longer links to.
+
 ## Security
 
 The data is personal: people, notes about them, dates. A review in
