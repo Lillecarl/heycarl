@@ -135,6 +135,25 @@ narrow by intent.
 4. **calendar**: Google (private), Google Workspace (work) and CalDAV/ICS.
    Mirrors events between calendars at a chosen visibility: full details,
    or "busy" with no title.
+5. **counters**: named counts, such as cups of coffee. See below.
+
+## Counters
+
+A counter's value is the sum of its events. Every change is an event
+with a nonzero delta, a note and a time, so the history is the data.
+
+- Set and reset add one event with the difference. Undo deletes the
+  newest event (the highest id), and the trash keeps it.
+- Tenancy: an event references `(counter_id, owner_sub)`, as in the
+  CRM. An event can only count on the caller's own counter.
+- Events have no update grant. A wrong event is undone, not edited.
+- Sums are SQL: the `counter_value` view, and `daily_totals` and
+  `count_since`, which are stable and so answer GET. A read-only MCP
+  connection can call them.
+- Set, reset and undo lock the counter row. A concurrent event waits,
+  so the difference is computed from the value it replaces.
+- Days in `daily_totals` are in a zone the caller names. The page
+  sends the browser's zone.
 
 ## The CRM
 
