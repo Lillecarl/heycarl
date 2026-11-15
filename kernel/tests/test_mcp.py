@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from fastapi import FastAPI
+    from heycarl.oauth import Provider
     from mcp.client.session import ElicitationFnT
 
 pytestmark = [pytest.mark.anyio, needs_database]
@@ -557,6 +558,32 @@ async def test_registration_refuses_a_dangerous_redirect(
         },
     )
     assert r.status_code == 400, r.text
+
+
+async def test_registrations_nobody_approved_are_capped(
+    app: FastAPI, site: httpx.AsyncClient
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        _conninfo("heycarl_owner"), autocommit=True
+    ) as conn:
+        cur = await conn.execute(
+            "select count(*) from heycarl_private.oauth_client c where not exists"
+            " (select from heycarl_private.oauth_grant g"
+            "  where g.client_id = c.client_id)"
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    provider: Provider = app.state.oauth
+    provider.unused_client_limit = row[0] + 1
+    await register(site)
+    r = await site.post(
+        "/register",
+        json={"redirect_uris": [REDIRECT], "grant_types": ["authorization_code"]},
+    )
+    assert r.status_code == 400, r.text
+    provider.unused_client_limit = row[0] + 2
+    _, r = await tokens_for(site)
+    assert r.status_code == 200, r.text
 
 
 async def test_a_grant_carries_the_scopes_the_person_chose(

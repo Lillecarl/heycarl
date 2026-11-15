@@ -52,6 +52,9 @@ REFRESH_LIFETIME: Final = timedelta(days=30)
 GRANT_LIFETIME: Final = timedelta(days=90)
 # A client nobody consented to is dropped after this.
 UNUSED_CLIENT_LIFETIME: Final = timedelta(days=1)
+# /register is open to anyone. Clients nobody consented to stop at this
+# many until the purge drops them: a flood fills no disk.
+UNUSED_CLIENT_LIMIT: Final = 50
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
 
 
@@ -114,6 +117,7 @@ class Provider:
         # routes that hold this provider exist.
         self._pool = pool
         self.public_url = public_url
+        self.unused_client_limit = UNUSED_CLIENT_LIMIT
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         async with self._pool().connection() as conn:
@@ -134,10 +138,22 @@ class Provider:
                     "a redirect URI must be https, or http to a loopback address",
                 )
         async with self._pool().connection() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "insert into heycarl_private.oauth_client (client_id, info)"
-                " values (%s, %s)",
-                (client_info.client_id, Jsonb(client_info.model_dump(mode="json"))),
+                " select %s, %s where (select count(*)"
+                "  from heycarl_private.oauth_client c where not exists"
+                "  (select from heycarl_private.oauth_grant g"
+                "   where g.client_id = c.client_id)) < %s",
+                (
+                    client_info.client_id,
+                    Jsonb(client_info.model_dump(mode="json")),
+                    self.unused_client_limit,
+                ),
+            )
+        if cur.rowcount == 0:
+            raise RegistrationError(
+                "invalid_client_metadata",
+                "too many apps wait for approval; try again tomorrow",
             )
 
     async def authorize(

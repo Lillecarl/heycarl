@@ -249,6 +249,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     names = cookie_names(config.public_url)
     redirect_uri = config.public_url + "/auth/callback"
     provider = oauth.Provider(lambda: app.state.pool, config.public_url)
+    app.state.oauth = provider
     completions = mcpserver.Completions()
     server = mcpserver.build(provider, completions)
 
