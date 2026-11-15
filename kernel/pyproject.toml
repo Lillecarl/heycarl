@@ -30,6 +30,11 @@ packages = ["heycarl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The suite takes under a minute; a test past this one is hung. It dumps
+# every thread's stack and ends the run: pynixd shows a build's log only
+# once the build ends, so a hang would otherwise show nothing at all.
+faulthandler_timeout = 60
+faulthandler_exit_on_timeout = true
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "asyncio".msg = "Use anyio."

@@ -55,6 +55,11 @@ python3Packages.buildPythonApplication (finalAttrs: {
     PGUSER=postgres psql -v ON_ERROR_STOP=1 -v database=heycarl -f heycarl/schema/roles.sql postgres
   '';
   env.HEYCARL_TEST_PLUGINS = builtins.toJSON (map toString testPlugins);
+  # Extra pytest arguments for one run, such as `-k name -x`. Read at
+  # evaluation time, so only an impure evaluation sees it; unset, nothing.
+  pytestFlags = lib.filter (a: a != "") (
+    lib.splitString " " (builtins.getEnv "HEYCARL_PYTEST_ARGS")
+  );
 
   pythonImportsCheck = [ "heycarl" ];
 
