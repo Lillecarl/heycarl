@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "name": "calendar",
+  "title": "Calendar",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_calendar",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-calendar": "Calendar" }
+  }
+}
