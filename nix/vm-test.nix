@@ -196,6 +196,21 @@ testers.runNixOSTest {
         machine.succeed(f"runuser -u heycarl -- curl -s -o /dev/null {sock}")
         machine.fail("runuser -u heycarl -- cat /run/credentials/heycarl-postgrest.service/jwt-secret")
 
+    with subtest("PostgREST refuses a request with no token or a forged one"):
+        sock = "--unix-socket /run/heycarl-postgrest/postgrest.sock http://pg"
+        get = f"runuser -u heycarl -- curl -s -o /dev/null -w '%{{http_code}}' -H 'Accept-Profile: heycarl_plugin_todos' {sock}/todo"
+        assert machine.succeed(get) == "401"
+        forged = "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiaGV5Y2FybF91c2VyIiwic3ViIjoieCJ9.AAAA"
+        assert machine.succeed(f"{get} -H 'Authorization: Bearer {forged}'") == "401"
+        unsigned = "eyJhbGciOiJub25lIn0.eyJyb2xlIjoiaGV5Y2FybF91c2VyIiwic3ViIjoieCJ9."
+        assert machine.succeed(f"{get} -H 'Authorization: Bearer {unsigned}'") == "401"
+
+    with subtest("another app's role in the same server cannot connect to the database"):
+        machine.succeed("runuser -u postgres -- psql -c 'create role outsider login'")
+        machine.succeed("runuser -u outsider -- psql -h /run/postgresql -d postgres -tAc 'select 1'")
+        err = machine.fail("runuser -u outsider -- psql -h /run/postgresql -d heycarl -tAc 'select 1' 2>&1")
+        assert "permission denied for database" in err, err
+
     with subtest("the units run sandboxed"):
         for unit in ["heycarl", "heycarl-postgrest"]:
             print(machine.succeed(f"systemd-analyze security --no-pager {unit}.service | tail -1"))

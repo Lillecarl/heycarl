@@ -32,6 +32,11 @@ where not exists (select from pg_database where datname = :'database')
 
 -- Since PostgreSQL 15 nobody but the owner may create in public. Revoke the
 -- rest too: the API roles see only what a migration grants them.
+-- Every role in the cluster may connect to a new database by default. Another
+-- app's role on the same server gets no session here.
+select format('revoke all on database %I from public', :'database') \gexec
+select format('grant connect on database %I to heycarl_authenticator', :'database') \gexec
+
 \connect :database
 revoke all on schema public from public;
 grant usage on schema public to heycarl_owner;
