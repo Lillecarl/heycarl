@@ -24,12 +24,14 @@ login_cookie=$(cookie_value "${prefix}heycarl-login" "$work/start")
 form=$(curl -s -L -c "$work/jar" -b "$work/jar" -o /dev/null -w '%{url_effective}' "$dex")
 callback=$(curl -s -c "$work/jar" -b "$work/jar" -o /dev/null -w '%{redirect_url}' \
   --data-urlencode "login=$email" --data-urlencode "password=$password" "$form")
-# An approval page comes between only without skipApprovalScreen.
-case $callback in
-  */approval\?*)
-    callback=$(curl -s -c "$work/jar" -b "$work/jar" -o /dev/null -w '%{redirect_url}' "$callback")
-    ;;
-esac
+# dex 2.46 sends the browser through its own /auth again, and through an
+# approval page without skipApprovalScreen, before the callback.
+for _ in 1 2 3 4; do
+  case $callback in
+    "$public"/* | "") break ;;
+  esac
+  callback=$(curl -s -c "$work/jar" -b "$work/jar" -o /dev/null -w '%{redirect_url}' "$callback")
+done
 case $callback in
   "$public/auth/callback?"*) ;;
   *) echo "dex did not send us back: $callback" >&2; exit 1 ;;
