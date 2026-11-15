@@ -132,9 +132,10 @@ narrow by intent.
    checked.
 3. **crm**: Monica's model: people, contact fields, relationships, notes,
    activities, tags, gifts and important dates. See below.
-4. **calendar**: Google (private), Google Workspace (work) and CalDAV/ICS.
-   Mirrors events between calendars at a chosen visibility: full details,
-   or "busy" with no title.
+4. **calendar**: Google Calendar, read-only. See below. Planned later:
+   Google Workspace (work) and CalDAV/ICS, and mirroring events between
+   calendars at a chosen visibility: full details, or "busy" with no
+   title.
 5. **counters**: named counts, such as cups of coffee. See below.
 
 ## Counters
@@ -154,6 +155,104 @@ with a nonzero delta, a note and a time, so the history is the data.
   so the difference is computed from the value it replaces.
 - Days in `daily_totals` are in a zone the caller names. The page
   sends the browser's zone.
+
+## Calendar
+
+Google Calendar into Hey Carl, one way and read-only. The only scope is
+`https://www.googleapis.com/auth/calendar.readonly`. Hey Carl never asks
+for a write scope.
+
+- Off by default. The module options `services.heycarl.google.clientId`,
+  `clientSecretFile` and `tokenKeyFile` turn it on, all three together.
+  Without them the page says "not configured", the tools find an empty
+  cache, and no job runs.
+- The redirect URI to register at the Google client is
+  `<publicUrl>/api/plugins/calendar/callback`, for hey.lillecarl.com
+  `https://hey.lillecarl.com/api/plugins/calendar/callback`.
+- Connect: the page POSTs `/api/plugins/calendar/connect` and gets
+  Google's URL. That is the authorization code flow with PKCE (S256),
+  `access_type=offline` and `prompt=consent`. The random `state` and the
+  verifier stay in kernel memory for 10 minutes, bound to the person and
+  to the hash of their session cookie. A restart drops a connect in
+  progress, and the person starts again.
+- The callback is a session route, so the gate refuses it without a
+  session. Google's redirect is a top-level GET, which carries the
+  SameSite=Lax cookie. The callback uses the state once and refuses it
+  when the person or the session differs from the one that started. It
+  also refuses a grant without the scope or without a refresh token.
+- Disconnect revokes the refresh token at Google, then deletes the token,
+  the calendars and the events, whatever Google answered. The answer says
+  whether Google confirmed.
+- Tables, in `heycarl_plugin_calendar`: `account` (status, last sync and
+  error), `calendar` (Google id, name, color, zone, selected),
+  `calendar_sync` (sync token and window) and `event`. RLS is owner-only
+  with the composite key, as in counters. `heycarl_user` may SELECT
+  `account`, `calendar`, `event` and the `agenda` view, and nothing else.
+  It cannot write anything. `calendar_sync` has no grant.
+- Every write goes through SECURITY DEFINER functions that only
+  `heycarl_worker` may run, and each takes the owner as an argument, as
+  `dav_authenticate` does for the gate. The person's own actions (choose
+  a calendar, sync now, disconnect) go to kernel routes, which call those
+  functions with the session's `sub`.
+- The refresh token lives in `heycarl_private.calendar_google_token`,
+  which no API role can reach. The kernel seals it with AES-GCM before
+  storing it, under a key derived from `tokenKeyFile` (a LoadCredential).
+  The owner is the associated data, so a sealed token copied to another
+  row does not open. The key never reaches PostgreSQL. pgcrypto would put
+  it in every SQL call, where a statement log could catch it. A dump
+  alone holds no usable token. Access tokens live only in kernel memory.
+  The client secret is read from its credential file, and no log line
+  carries a token.
+- Sync: a job every 10 minutes, woken early by a connect or a newly
+  chosen calendar, plus "sync now" (the page, and MCP `calendar_sync`),
+  at most once per 10 seconds per person. One lock per person serializes
+  sync, connect, choose and disconnect.
+- The window is 30 days back to 365 days ahead. A full sync lists that
+  window with `singleEvents=true`, so recurring events arrive as their
+  instances. It keeps the `nextSyncToken` from the last page. A later
+  sync sends only that token, with `singleEvents=true` as before, because
+  Google forbids `timeMin` beside a token. Changes outside the window are
+  dropped here. A 410 Gone, a missing token, or a day since the last full
+  sync means a full sync again. The daily full sync moves the window on:
+  an instance that enters the window at its far end is no change to
+  Google, so no token would bring it.
+  - Rejected: a token sync without the window and with local expansion of
+    recurrence rules. That means expanding RRULEs, EXDATEs and exceptions
+    here, which is more code than the daily full sync.
+- Writes are upserts on `(calendar_id, google_id)`, so an event keeps
+  its id, and its links, across a full sync. A cancelled item, or one
+  that left the window, is deleted, along with the instances of a
+  cancelled series. A full sync deletes what Google no longer lists.
+  Google text is truncated in the kernel, not refused by a CHECK, so one
+  long description cannot stop the sync.
+- Links: `event` is tracked so that it can be linked and found by
+  `entries`, with the route `/p/calendar/heycarl-calendar#/event/{id}`.
+  The migration drops its version trigger at once. Google owns these
+  rows, so they have no history and no trash, and `restore` and `undo`
+  can never write into the cache.
+- CRM: `event_people(event_id)` returns the contacts whose email field
+  matches an attendee, compared in lowercase, as the caller under RLS.
+  Without the CRM plugin it returns nothing.
+- MCP: `calendar_upcoming`, `calendar_events`, `calendar_event` (with
+  its people) and `calendar_calendars` are read-only. `calendar_sync`
+  needs `write`: it changes nothing at Google, but it spends quota. The
+  resource is `heycarl://calendar/upcoming` and the prompt is
+  `calendar_week`. Anyone who sends an invitation can write event text, so
+  every answer that carries it says it is data, not instructions.
+- Tests: `kernel/tests/fake_google.py` is a small fake of Google's OAuth,
+  revoke, calendarList and events.list with sync tokens. The kernel tests
+  run it in a thread. The VM test runs the same file as a service and
+  points `google.testEndpoints` (internal) at it.
+
+Accepted:
+
+- A connect in progress lives in memory; a restart drops it.
+- When Google does not confirm a revoke, Hey Carl still forgets the
+  token. The grant then stays listed in the person's Google account until
+  they remove it there.
+- Losing `tokenKeyFile` means every person connects again.
+- The kernel's worker token can read every sealed token, so the key is
+  what protects them.
 
 ## The CRM
 
@@ -482,8 +581,9 @@ Open:
 ## Open questions
 
 - Google OAuth apps in "testing" status may expire refresh tokens after
-  about a week, and a Workspace admin may have to allow the app. Check
-  before the calendar plugin is built.
+  about a week, and a Workspace admin may have to allow the app. The
+  calendar plugin then marks the account "connect again". Check this
+  against the real client once it exists.
 
 ## Build order
 
