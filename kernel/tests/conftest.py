@@ -164,7 +164,7 @@ async def client(app: FastAPI, postgrest: None) -> AsyncIterator[httpx.AsyncClie
         yield c
 
 
-def as_user(sub: str) -> dict[str, str]:
+def as_user(sub: str, email: str | None = None) -> dict[str, str]:
     """Headers of a browser signed in as `sub`: a real session row and cookie.
 
     Synchronous so tests can build headers inline; the app has migrated by
@@ -173,9 +173,9 @@ def as_user(sub: str) -> dict[str, str]:
     token = sessions.new_token()
     with psycopg.connect(_conninfo("heycarl_owner")) as conn:
         conn.execute(
-            "insert into heycarl_private.session (token_hash, sub, expires_at)"
-            " values (%s, %s, now() + interval '1 hour')",
-            (sessions.token_hash(token), sub),
+            "insert into heycarl_private.session (token_hash, sub, email, expires_at)"
+            " values (%s, %s, %s, now() + interval '1 hour')",
+            (sessions.token_hash(token), sub, email),
         )
     name = cookie_names(PUBLIC_URL).session
     return {"cookie": f"{name}={token}", "origin": PUBLIC_URL}

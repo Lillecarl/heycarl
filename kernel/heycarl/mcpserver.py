@@ -502,7 +502,7 @@ def consent_router(provider: Provider) -> APIRouter:
             if form.get("decision") == "approve"
             else None
         )
-        target = await provider.decide(request_id, who.sub, chosen)
+        target = await provider.decide(request_id, who.sub, who.email, chosen)
         if target is None:
             return PlainTextResponse(gone, status.HTTP_404_NOT_FOUND)
         return RedirectResponse(

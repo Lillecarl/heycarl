@@ -69,6 +69,7 @@ class FakeProvider:
             "aud": client_id,
             "sub": self.sub,
             "email": self.email,
+            "email_verified": True,
             "nonce": nonce,
             "iat": now,
             "exp": now + 300,
@@ -337,6 +338,20 @@ async def test_allowed_emails(
     assert (await sign_in(client))[0].status_code == 403
     provider.email = "Carl@Example.com"
     assert (await sign_in(client))[0].status_code == 303
+    provider.tamper = {"email_verified": False}
+    assert (await sign_in(client))[0].status_code == 403
+
+
+@needs_database
+@pytest.mark.parametrize("allowed_emails", [frozenset({"carl@example.com"})])
+async def test_a_session_ends_when_its_address_leaves_the_list(
+    client: httpx.AsyncClient,
+) -> None:
+    staying = as_user("carl-sub", "carl@example.com")
+    assert (await client.get("/api/me", headers=staying)).status_code == 200
+    gone = as_user("former-sub", "former@example.com")
+    assert (await client.get("/api/me", headers=gone)).status_code == 401
+    assert (await client.get("/api/me", headers=as_user("none-sub"))).status_code == 401
 
 
 # The ID token checks, one at a time.
@@ -390,9 +405,14 @@ def unsigned() -> str:
 
 
 def test_a_good_token_passes() -> None:
-    assert validate(token(email="A@B.C")) == oidc.Identity(
+    assert validate(token(email="A@B.C", email_verified=True)) == oidc.Identity(
         sub="s", email="a@b.c", name=None
     )
+
+
+@pytest.mark.parametrize("verified", [False, "true", None])
+def test_an_unverified_email_counts_as_none(verified: object) -> None:
+    assert validate(token(email="a@b.c", email_verified=verified)).email is None
 
 
 @pytest.mark.parametrize(

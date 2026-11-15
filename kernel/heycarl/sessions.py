@@ -22,6 +22,11 @@ LOGIN_LIFETIME: Final = timedelta(minutes=10)
 TOKEN_BYTES: Final = 32
 
 
+def admitted(email: str | None, allowed: frozenset[str]) -> bool:
+    """Whether allowedEmails lets `email` in. Empty lets in everyone."""
+    return not allowed or email in allowed
+
+
 def new_token() -> str:
     return secrets.token_urlsafe(TOKEN_BYTES)
 

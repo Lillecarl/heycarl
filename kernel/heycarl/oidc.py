@@ -137,7 +137,9 @@ def validate_id_token(
     sub = claims["sub"]
     if not isinstance(sub, str) or not sub:
         raise LoginError("the ID token has no subject")
-    email = claims.get("email")
+    # allowedEmails trusts the address, so an unverified one counts as none:
+    # some upstream connectors let a person type any address.
+    email = claims.get("email") if claims.get("email_verified") is True else None
     name = claims.get("name") or claims.get("preferred_username")
     return Identity(
         sub=sub,

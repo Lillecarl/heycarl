@@ -191,10 +191,16 @@ class AccessMiddleware:
     """Pure ASGI: it never buffers a body, so MCP's event streams pass."""
 
     def __init__(
-        self, app: ASGIApp, *, public_url: str, script_hashes: Iterable[str] = ()
+        self,
+        app: ASGIApp,
+        *,
+        public_url: str,
+        script_hashes: Iterable[str] = (),
+        allowed_emails: frozenset[str] = frozenset(),
     ) -> None:
         self.app = app
         self.public_url = public_url
+        self.allowed_emails = allowed_emails
         self.names = cookie_names(public_url)
         self.extra = security_headers(
             public_url, content_security_policy(script_hashes)
@@ -227,6 +233,14 @@ class AccessMiddleware:
         # The kernel opens the pool at startup, after the middleware exists.
         pool: AsyncConnectionPool = scope["app"].state.pool
         session = await sessions.lookup(pool, token) if token else None
+        # allowedEmails may have lost this address since the sign-in.
+        if (
+            token
+            and session is not None
+            and not sessions.admitted(session.email, self.allowed_emails)
+        ):
+            await sessions.delete(pool, token)
+            session = None
         if session is None:
             if path.startswith("/api/") or scope["method"] not in SAFE_METHODS:
                 await self._reply(send_with_headers, 401, {"detail": "sign in"})

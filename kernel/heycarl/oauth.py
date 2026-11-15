@@ -27,7 +27,7 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from psycopg.types.json import Jsonb
 
-from .sessions import new_token, token_hash
+from .sessions import admitted, new_token, token_hash
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -111,12 +111,16 @@ def granted(offered: list[str], chosen: list[str]) -> list[str]:
 
 class Provider:
     def __init__(
-        self, pool: Callable[[], AsyncConnectionPool], public_url: str
+        self,
+        pool: Callable[[], AsyncConnectionPool],
+        public_url: str,
+        allowed_emails: frozenset[str] = frozenset(),
     ) -> None:
         # A callable: the kernel opens the pool in its lifespan, after the
         # routes that hold this provider exist.
         self._pool = pool
         self.public_url = public_url
+        self.allowed_emails = allowed_emails
         self.unused_client_limit = UNUSED_CLIENT_LIMIT
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
@@ -197,7 +201,7 @@ class Provider:
         )
 
     async def decide(
-        self, request_id: str, sub: str, chosen: list[str] | None
+        self, request_id: str, sub: str, email: str | None, chosen: list[str] | None
     ) -> str | None:
         """Where to send the browser: a code on approval, an error on denial.
 
@@ -223,9 +227,9 @@ class Provider:
                 )
             cur = await conn.execute(
                 "insert into heycarl_private.oauth_grant"
-                " (client_id, sub, scopes, resource, expires_at)"
-                " values (%s, %s, %s, %s, now() + %s) returning id",
-                (client_id, sub, scopes, params.resource, GRANT_LIFETIME),
+                " (client_id, sub, email, scopes, resource, expires_at)"
+                " values (%s, %s, %s, %s, %s, now() + %s) returning id",
+                (client_id, sub, email, scopes, params.resource, GRANT_LIFETIME),
             )
             grant = await cur.fetchone()
             if grant is None:
@@ -254,7 +258,7 @@ class Provider:
             cur = await conn.execute(
                 "select g.id, g.client_id, g.sub, g.scopes, g.resource,"
                 " c.code_challenge, c.redirect_uri, c.redirect_uri_explicit,"
-                " extract(epoch from c.expires_at)::float8"
+                " extract(epoch from c.expires_at)::float8, g.email"
                 " from heycarl_private.oauth_code c"
                 " join heycarl_private.oauth_grant g on g.id = c.grant_id"
                 " where c.code_hash = %s and g.client_id = %s"
@@ -262,7 +266,7 @@ class Provider:
                 (token_hash(authorization_code), client.client_id),
             )
             row = await cur.fetchone()
-        if row is None:
+        if row is None or not admitted(row[9], self.allowed_emails):
             return None
         return Code(
             code=authorization_code,
@@ -363,7 +367,7 @@ class Provider:
         async with self._pool().connection() as conn:
             cur = await conn.execute(
                 "select g.id, g.client_id, g.sub, t.scopes, g.resource,"
-                " extract(epoch from t.expires_at)::bigint"
+                " extract(epoch from t.expires_at)::bigint, g.email"
                 " from heycarl_private.oauth_token t"
                 " join heycarl_private.oauth_grant g on g.id = t.grant_id"
                 " where t.token_hash = %s and t.kind = %s and t.expires_at > now()"
@@ -371,7 +375,7 @@ class Provider:
                 (token_hash(token), kind),
             )
             row = await cur.fetchone()
-        if row is None:
+        if row is None or not admitted(row[6], self.allowed_emails):
             return None
         return Access(
             token=token,

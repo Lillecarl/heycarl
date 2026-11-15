@@ -696,6 +696,20 @@ async def test_a_grant_ends_after_its_lifetime(site: httpx.AsyncClient) -> None:
     assert (await site.get("/api/oauth/grants", headers=erin)).json() == []
 
 
+async def test_a_grant_ends_when_its_address_leaves_the_list(
+    app: FastAPI, site: httpx.AsyncClient
+) -> None:
+    client, r = await tokens_for(site)
+    tokens = r.json()
+    mcp = {"authorization": f"Bearer {tokens['access_token']}"}
+    assert (await site.post("/mcp", json={}, headers=mcp)).status_code != 401
+    provider: Provider = app.state.oauth
+    provider.allowed_emails = frozenset({"someone-else@example.com"})
+    assert (await site.post("/mcp", json={}, headers=mcp)).status_code == 401
+    r = await site.post("/token", data=refreshing(client, tokens["refresh_token"]))
+    assert r.status_code == 400
+
+
 async def test_revoke_ends_the_grant(site: httpx.AsyncClient) -> None:
     client, r = await tokens_for(site)
     second = r.json()

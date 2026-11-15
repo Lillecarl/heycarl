@@ -245,10 +245,13 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         AccessMiddleware,
         public_url=config.public_url,
         script_hashes=inline_script_hashes(index_html),
+        allowed_emails=config.allowed_emails,
     )
     names = cookie_names(config.public_url)
     redirect_uri = config.public_url + "/auth/callback"
-    provider = oauth.Provider(lambda: app.state.pool, config.public_url)
+    provider = oauth.Provider(
+        lambda: app.state.pool, config.public_url, config.allowed_emails
+    )
     app.state.oauth = provider
     completions = mcpserver.Completions()
     server = mcpserver.build(provider, completions)
@@ -306,7 +309,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         except oidc.LoginError as e:
             log.warning("login_refused", reason=str(e))
             return _refuse(403, f"The sign-in was refused: {e}.")
-        if config.allowed_emails and identity.email not in config.allowed_emails:
+        if not sessions.admitted(identity.email, config.allowed_emails):
             log.warning("login_not_allowed", sub=identity.sub, email=identity.email)
             return _refuse(403, "This account may not use Hey Carl.")
         token = await sessions.create(pool, identity)
