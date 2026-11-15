@@ -23,7 +23,12 @@ import pytest
 import uvicorn
 from cryptography.hazmat.primitives.asymmetric import rsa
 from heycarl import oidc
-from heycarl.access import access_for, inline_script_hashes, safe_next
+from heycarl.access import (
+    AccessMiddleware,
+    access_for,
+    inline_script_hashes,
+    safe_next,
+)
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -460,6 +465,27 @@ def test_safe_next() -> None:
         "javascript:alert(1)",
     ):
         assert safe_next(evil) == "/"
+
+
+async def test_the_gate_refuses_every_websocket() -> None:
+    reached: list[str] = []
+
+    async def inner(scope: Any, receive: Any, send: Any) -> None:
+        reached.append(scope["path"])
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "websocket.connect"}
+
+    gate = AccessMiddleware(inner, public_url=PUBLIC_URL)
+    for path in ("/api/me", "/healthz", "/mcp"):
+        await gate({"type": "websocket", "path": path, "headers": []}, receive, send)
+    assert reached == []
+    assert sent == [{"type": "websocket.close", "code": 1008}] * 3
 
 
 def test_pkce_matches_rfc_7636() -> None:

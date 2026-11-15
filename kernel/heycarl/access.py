@@ -207,6 +207,11 @@ class AccessMiddleware:
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # No route takes a WebSocket, and this gate checks none: a plugin
+        # router's websocket route would otherwise open with no session.
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
