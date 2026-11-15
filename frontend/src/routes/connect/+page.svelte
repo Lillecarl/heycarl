@@ -40,7 +40,66 @@
 		await load();
 	}
 
-	onMount(load);
+	type AppPassword = {
+		id: string;
+		name: string;
+		scopes: string[];
+		created_at: string;
+		last_used_at: string | null;
+		expires_at: string;
+	};
+	type Made = { username: string; secret: string };
+
+	const davUrl = `${location.origin}/dav/`;
+	const passwordsApi = '/api/data/core/app_password';
+	let passwords = $state<AppPassword[] | null>(null);
+	let made = $state<Made | null>(null);
+	let deviceName = $state('');
+	let allowWrite = $state(false);
+
+	async function loadPasswords(): Promise<void> {
+		const r = await fetch(`${passwordsApi}?order=created_at`);
+		if (!r.ok) {
+			error = `Could not load app passwords: ${r.status}`;
+			return;
+		}
+		passwords = await r.json();
+	}
+
+	async function makePassword(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		const r = await fetch('/api/data/core/rpc/app_password_create', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ name: deviceName, allow_write: allowWrite })
+		});
+		if (!r.ok) {
+			error = `Could not make an app password: ${(await r.json()).message ?? r.status}`;
+			return;
+		}
+		made = await r.json();
+		deviceName = '';
+		allowWrite = false;
+		await loadPasswords();
+	}
+
+	async function revokePassword(p: AppPassword): Promise<void> {
+		if (!confirm(`Revoke the app password for ${p.name}? It stops working at once.`)) return;
+		const r = await fetch(`${passwordsApi}?id=eq.${encodeURIComponent(p.id)}`, {
+			method: 'DELETE'
+		});
+		if (!r.ok) {
+			error = `Could not revoke: ${r.status}`;
+			return;
+		}
+		if (made?.username === p.id) made = null;
+		await loadPasswords();
+	}
+
+	onMount(() => {
+		load();
+		loadPasswords();
+	});
 </script>
 
 <h1>Connect an AI</h1>
@@ -131,7 +190,87 @@
 	</ul>
 {/if}
 
+<h2>App passwords</h2>
+<p>
+	Calendar and contact apps (CalDAV and CardDAV) cannot sign in here. Make one app password for each
+	device. It works only for those apps, never for this site or for MCP.
+</p>
+
+<form onsubmit={makePassword}>
+	<input bind:value={deviceName} placeholder="Device, e.g. Phone" maxlength="100" required />
+	<label><input type="checkbox" bind:checked={allowWrite} /> Allow changes</label>
+	<button type="submit">Make</button>
+</form>
+
+{#if made}
+	<div class="made">
+		<p><strong>Copy these now. The password does not show again.</strong></p>
+		<dl>
+			<dt>Server</dt>
+			<dd><code>{davUrl}</code></dd>
+			<dt>Username</dt>
+			<dd><code>{made.username}</code></dd>
+			<dt>Password</dt>
+			<dd><code>{made.secret}</code></dd>
+		</dl>
+		<button onclick={() => (made = null)}>Done</button>
+	</div>
+{/if}
+
+{#if passwords === null}
+	<p class="note">Loading…</p>
+{:else if passwords.length === 0}
+	<p class="note">No app passwords.</p>
+{:else}
+	<ul class="grants">
+		{#each passwords as p (p.id)}
+			<li>
+				<div>
+					<strong>{p.name}</strong>
+					<span class="note"><code>{p.id}</code></span>
+					<div class="note">
+						{p.scopes.includes('write') ? 'Read and change' : 'Read only'} · last used
+						{p.last_used_at ? new Date(p.last_used_at).toLocaleDateString() : 'never'} · ends
+						{new Date(p.expires_at).toLocaleDateString()}
+					</div>
+				</div>
+				<button onclick={() => revokePassword(p)}>Revoke</button>
+			</li>
+		{/each}
+	</ul>
+{/if}
+
 <style>
+	form {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+		margin: 1rem 0;
+	}
+	input:not([type]) {
+		font: inherit;
+		padding: 0.3rem 0.5rem;
+		color: var(--hc-fg);
+		background: none;
+		border: 1px solid var(--hc-muted);
+		border-radius: 6px;
+	}
+	.made {
+		margin: 1rem 0;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--hc-fg);
+		border-radius: 6px;
+	}
+	.made dl {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: 0.25rem 1rem;
+	}
+	.made dd {
+		margin: 0;
+		overflow-wrap: anywhere;
+	}
 	.url {
 		display: flex;
 		gap: 0.5rem;
