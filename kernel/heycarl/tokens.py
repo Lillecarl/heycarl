@@ -16,6 +16,8 @@ LIFETIME_SECONDS: Final = 60
 class Role(StrEnum):
     USER = "heycarl_user"
     WORKER = "heycarl_worker"
+    # May only run heycarl.dav_authenticate.
+    GATE = "heycarl_gate"
 
 
 class Via(StrEnum):
@@ -44,6 +46,7 @@ class Minter:
         sub: str | None,
         via: str | None = None,
         now: float | None = None,
+        email: str | None = None,
     ) -> str:
         issued = int(time.time() if now is None else now)
         claims: dict[str, str | int] = {
@@ -55,10 +58,15 @@ class Minter:
             claims["sub"] = sub
         if via is not None:
             claims["via"] = via
+        if email is not None:
+            claims["email"] = email
         return jwt.encode(claims, self.secret, algorithm=ALGORITHM)
 
-    def user(self, sub: str, via: str) -> str:
-        return self.mint(Role.USER, sub, via)
+    def user(self, sub: str, via: str, email: str | None = None) -> str:
+        return self.mint(Role.USER, sub, via, email=email)
 
     def worker(self) -> str:
         return self.mint(Role.WORKER, None)
+
+    def gate(self) -> str:
+        return self.mint(Role.GATE, None)

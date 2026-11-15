@@ -26,7 +26,17 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from . import mcpserver, migrations, oauth, oidc, postgrest, push, sessions
+from . import (
+    apppasswords,
+    dav,
+    mcpserver,
+    migrations,
+    oauth,
+    oidc,
+    postgrest,
+    push,
+    sessions,
+)
 from .access import (
     AccessMiddleware,
     cookie_names,
@@ -175,6 +185,16 @@ async def _purge_forever(pool: AsyncConnectionPool) -> None:
         await anyio.sleep(PURGE_SECONDS)
 
 
+async def _purge_app_passwords_forever(kernel: Kernel) -> None:
+    # Through PostgREST, which may still be starting: wait a round first.
+    while True:
+        await anyio.sleep(PURGE_SECONDS)
+        try:
+            await apppasswords.purge(kernel)
+        except Exception:
+            log.exception("app_password_purge_failed")
+
+
 def _refuse(status_code: int, message: str) -> Response:
     return PlainTextResponse(
         message, status_code=status_code, headers={"cache-control": "no-store"}
@@ -229,6 +249,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             )
             app.state.kernel = kernel
             sdk_app.state.kernel = kernel
+            tg.start_soon(_purge_app_passwords_forever, kernel)
             for ctx in contexts:
                 for job in ctx.jobs:
                     tg.start_soon(job, kernel)
@@ -424,7 +445,9 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             "/" + path,
             params=request.query_params.multi_items(),
             headers=postgrest.request_headers(
-                dict(request.headers), kernel.minter.user(who.sub, Via.APP), schema
+                dict(request.headers),
+                kernel.minter.user(who.sub, Via.APP, who.email),
+                schema,
             ),
             content=await request.body(),
         )
@@ -434,6 +457,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             headers=postgrest.response_headers(upstream.headers),
         )
 
+    app.include_router(dav.router)
     contexts = _register_backends(app, plugins, server, completions)
     app.include_router(mcpserver.consent_router(provider))
     sdk_app = mcpserver.mount(app, server)
@@ -472,7 +496,9 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             # Files at the top level (manifest, service worker, icons), else the
             # SPA's index for any client-side route. Never for an API path: a
             # caller expecting JSON must not get a page and a 200.
-            if path.startswith(("api/", "plugins/", "auth/", ".well-known/")):
+            if path == "dav" or path.startswith(
+                ("api/", "plugins/", "auth/", ".well-known/", "dav/")
+            ):
                 raise HTTPException(status.HTTP_404_NOT_FOUND)
             candidate = (static / path).resolve()
             target = (

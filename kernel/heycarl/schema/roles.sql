@@ -13,7 +13,8 @@ begin
       execute format('create role %I login', r);
     end if;
   end loop;
-  foreach r in array array['heycarl_user', 'heycarl_worker'] loop
+  -- heycarl_gate checks an app password and may do nothing else.
+  foreach r in array array['heycarl_user', 'heycarl_worker', 'heycarl_gate'] loop
     if not exists (select from pg_roles where rolname = r) then
       execute format('create role %I nologin', r);
     end if;
@@ -22,9 +23,9 @@ end
 $$;
 
 -- PostgREST switches to the role in the token's `role` claim, so it must be a
--- member of both and inherit the rights of neither.
+-- member of each and inherit the rights of none.
 alter role heycarl_authenticator noinherit;
-grant heycarl_user, heycarl_worker to heycarl_authenticator;
+grant heycarl_user, heycarl_worker, heycarl_gate to heycarl_authenticator;
 
 select format('create database %I owner heycarl_owner', :'database')
 where not exists (select from pg_database where datname = :'database')

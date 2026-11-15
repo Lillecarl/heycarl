@@ -164,6 +164,20 @@ testers.runNixOSTest {
             "-d '{\"title\": \"x\"}' http://hey/api/data/todos/todo"
         ) == "403"
 
+    with subtest("an app password opens /dav/ only, until it is revoked"):
+        made = json.loads(curl(
+            f"-f {as_alice} -H 'content-type: application/json' "
+            "-d '{\"name\": \"vm phone\"}' http://hey/api/data/core/rpc/app_password_create"
+        ))
+        basic = f"-u {made['username']}:{made['secret']} -H 'depth: 0'"
+        assert status(f"{basic} -X PROPFIND http://hey/dav/") == "207"
+        assert status("-X PROPFIND http://hey/dav/") == "401"
+        assert status(f"{basic} http://hey/api/me") == "401"
+        assert status(f"{basic} -X PUT -d x http://hey/dav/x") == "403"
+        assert status(f"{basic} -X PROPFIND http://hey/.well-known/carddav") == "301"
+        assert status(f"{as_alice} -X DELETE 'http://hey/api/data/core/app_password?id=eq.{made['username']}'") == "204"
+        assert status(f"{basic} -X PROPFIND http://hey/dav/") == "401"
+
     with subtest("a birthday in the CRM makes a reminder"):
         post = f"{as_alice} -H 'content-type: application/json' -H 'prefer: return=representation'"
         [anna] = json.loads(

@@ -29,6 +29,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     aiohttp
     anyio
     cryptography
+    defusedxml
     fastapi
     httpx
     mcp

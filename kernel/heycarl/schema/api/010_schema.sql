@@ -4,7 +4,7 @@
 --
 -- PostgREST builds its schema cache as heycarl_authenticator, before it
 -- switches role, so that role needs USAGE too or every request is a 404.
-grant usage on schema heycarl to heycarl_authenticator, heycarl_user, heycarl_worker;
+grant usage on schema heycarl to heycarl_authenticator, heycarl_user, heycarl_worker, heycarl_gate;
 
 create view heycarl.me with (security_invoker = true) as
   select heycarl_sdk.sub() as sub;
