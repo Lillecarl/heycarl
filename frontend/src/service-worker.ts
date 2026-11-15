@@ -40,7 +40,9 @@ sw.addEventListener('push', (event) => {
 
 sw.addEventListener('notificationclick', (event) => {
 	event.notification.close();
-	const url: string = event.notification.data?.url ?? '/';
+	// The link comes from stored data: open it only on this site.
+	const target = new URL(event.notification.data?.url ?? '/', sw.location.origin);
+	const url = target.origin === sw.location.origin ? target.href : '/';
 	event.waitUntil(
 		(async () => {
 			const windows = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
