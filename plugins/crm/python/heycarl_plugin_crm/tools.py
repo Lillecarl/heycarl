@@ -46,6 +46,13 @@ DETAIL_ORDER: Final = [
 ActivityKind = Literal["call", "message", "meeting", "meal", "visit", "other"]
 FieldKind = Literal["email", "phone", "address", "website", "social", "other"]
 DateKind = Literal["birthday", "anniversary", "memorial", "other"]
+# The rows of relationship_kind (migrations/0001_crm.sql); a kind added there
+# needs adding here, or the tool refuses it before the database could.
+RelationKind = Literal[
+    "partner", "spouse", "ex-partner", "parent", "child", "sibling",
+    "grandparent", "grandchild", "relative", "friend", "best friend",
+    "colleague", "manager", "report", "mentor", "mentee",
+]  # fmt: skip
 
 # Any: PostgREST rows, JSON of the shape the select asks for. A tool never
 # returns Rows bare: FastMCP sends each item of a list as its own text block,
@@ -287,6 +294,38 @@ def register_tools(mcp: FastMCP) -> None:
         if happened_at is not None:
             body["happened_at"] = happened_at
         return await call(ctx, SCOPE, "POST", "rpc/log_activity", body=body)
+
+    @mcp.tool(annotations=WRITE)
+    async def people_relate(
+        ctx: Context, person_id: int, other_id: int, kind: RelationKind
+    ) -> dict[str, Any]:
+        """Record how two people are related: `kind` is what other_id is to
+        person_id. kind="parent" records other_id as person_id's parent;
+        other_id then shows person_id as a child. people_get lists
+        relations from both sides."""
+        [row] = await call(
+            ctx,
+            SCOPE,
+            "POST",
+            "relationship",
+            body={"contact_id": person_id, "other_id": other_id, "kind": kind},
+        )
+        return row
+
+    @mcp.tool(annotations=WRITE)
+    async def people_unrelate(ctx: Context, relationship_id: int) -> str:
+        """Remove a relation, by the relationship_id people_get shows. The
+        history keeps it, so `undo` brings it back."""
+        rows = await call(
+            ctx,
+            SCOPE,
+            "DELETE",
+            "relationship",
+            params={"id": f"eq.{relationship_id}"},
+        )
+        if not rows:
+            raise ValueError(f"no relation with id {relationship_id}")
+        return "removed"
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def people_delete(ctx: Context, person_id: int) -> str:
