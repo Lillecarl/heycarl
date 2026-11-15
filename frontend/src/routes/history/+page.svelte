@@ -87,17 +87,24 @@
 		);
 	}
 
-	async function restore(version: number): Promise<void> {
+	async function act(name: 'restore' | 'undo', version: number): Promise<void> {
 		await attempt(async () => {
-			const result = await rpc<{ restored: number; updated: boolean; failed: Failed[] }>(
-				'restore',
+			const result = await rpc<{ done: number; failed: Failed[]; changed_since: Item[] }>(
+				name,
 				{ version }
 			);
-			notice = result.failed.length
-				? `Some rows could not come back yet and stay in the trash: ${result.failed
+			const parts = [result.done === 1 ? '1 record put back.' : `${result.done} records put back.`];
+			if (result.failed.length)
+				parts.push(
+					`These could not come back yet: ${result.failed
 						.map((f) => `${what(f)} (${f.error})`)
-						.join('; ')}`
-				: 'Restored.';
+						.join('; ')}.`
+				);
+			if (result.changed_since.length)
+				parts.push(
+					`Left alone, because they changed again since: ${result.changed_since.map(what).join(', ')}.`
+				);
+			notice = parts.join(' ');
 			await Promise.all([loadTrash(), loadChanges(true)]);
 		});
 	}
@@ -171,7 +178,7 @@
 						<div class="note">Deleted {when(entry.at)} by {who(entry.via)}</div>
 					</div>
 					<div class="actions">
-						<button onclick={() => restore(entry.entry)}>Restore</button>
+						<button onclick={() => act('restore', entry.entry)}>Restore</button>
 						<button class="danger" onclick={() => purge(entry)}>Delete for good</button>
 					</div>
 				</li>
@@ -193,10 +200,15 @@
 						<div class="note">{when(v.at)} · {who(v.via)}</div>
 					</div>
 					<div class="actions">
-						{#if v.op === 'delete' && v.newest}
-							<button onclick={() => restore(v.id)}>Restore</button>
-						{:else if v.op !== 'delete' && !v.newest}
-							<button onclick={() => restore(v.id)}>Go back to this</button>
+						<button
+							title="Undo everything this change did, on every record it touched"
+							onclick={() => act('undo', v.id)}>Undo</button
+						>
+						{#if v.op !== 'delete' && !v.newest}
+							<button
+								title="Put this one record back to how it was here"
+								onclick={() => act('restore', v.id)}>Go back to this</button
+							>
 						{/if}
 					</div>
 				</li>

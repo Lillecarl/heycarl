@@ -66,7 +66,7 @@ WRITE_VERBS: Final = {"POST": "Write to", "PATCH": "Change", "DELETE": "Delete f
 CONFIRM_BODY_CHARS: Final = 500
 # The core functions MCP may call. Purge is not one: only the app may.
 CORE_READ_RPC: Final = frozenset({"history", "trash"})
-CORE_WRITE_RPC: Final = frozenset({"restore"})
+CORE_WRITE_RPC: Final = frozenset({"restore", "undo"})
 # Any: JSON values, whatever the table holds. A tool returns it inside an
 # object: FastMCP sends each item of a bare list as its own text block, and
 # a client that reads the text gets one object, or nothing for no rows.
@@ -476,7 +476,7 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
 
     @server.tool(annotations=ToolAnnotations(idempotentHint=True))
     async def restore(ctx: Context, version: int) -> dict[str, Json]:
-        """Bring back a version from history, or a trash entry by its id.
+        """One record back to a version from history, or a trash entry by its id.
 
         A live record gets that state back. A deleted one comes back with
         everything its delete took along. Rows that cannot come back yet
@@ -484,6 +484,17 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
         A restore is itself a change, so it can be undone the same way.
         """
         result: dict[str, Json] = await core_rpc(ctx, "restore", {"version": version})
+        return result
+
+    @server.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def undo(ctx: Context, version: int) -> dict[str, Json]:
+        """Undo the whole change that made a version: every record it touched.
+
+        One call reverses a change over many rows, or a delete with all it
+        took along. A record changed again since is left alone and listed
+        in `changed_since`; undo never overwrites later work.
+        """
+        result: dict[str, Json] = await core_rpc(ctx, "undo", {"version": version})
         return result
 
     return server

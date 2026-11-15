@@ -73,7 +73,7 @@ async def test_the_app_sees_versions_restores_and_purges(
     assert [v["newest"] for v in versions] == [True, False, False]
 
     result = await call(client, me, "POST", "core/rpc/restore", {"version": versions[-1]["id"]})
-    assert result["updated"] is True
+    assert result == {"done": 1, "failed": [], "changed_since": []}
     [now] = await call(client, me, "GET", key)
     assert now["title"] == "first"
 
@@ -130,11 +130,57 @@ async def test_bookkeeping_alone_makes_no_version(client: httpx.AsyncClient) -> 
         {"of_scope": "reminders", "of_key": {"id": rem["id"]}},
     )
     assert [v["op"] for v in versions] == ["insert"]
-    # Restoring the old state must not send it again.
-    await call(client, me, "PATCH", f"reminders/reminder?id=eq.{rem['id']}", {"title": "Ring"})
+    # Restoring the old state, its old time included, must not send it again:
+    # a moved time re-arms a reminder, but not when a restore moves it.
+    await call(
+        client, me, "PATCH", f"reminders/reminder?id=eq.{rem['id']}",
+        {"title": "Ring", "due_at": "2030-01-02T09:00:00Z"},
+    )
+    await owner_rows(
+        "update heycarl_plugin_reminders.reminder set state = 'sent' where id = %s",
+        rem["id"],
+    )
     await call(client, me, "POST", "core/rpc/restore", {"version": versions[0]["id"]})
     [now] = await call(client, me, "GET", f"reminders/reminder?id=eq.{rem['id']}")
-    assert (now["title"], now["state"]) == ("Call", "sent")
+    assert (now["title"], now["due_at"][:10], now["state"]) == ("Call", "2030-01-01", "sent")
+
+
+async def test_undo_reverses_a_change_to_many_rows_in_one_call(
+    client: httpx.AsyncClient,
+) -> None:
+    me = as_user("hist-undo")
+    for title in ("a", "b", "c"):
+        await call(client, me, "POST", "todos/todo", {"title": title})
+    await call(client, me, "PATCH", "todos/todo?id=gt.0", {"title": "spam"})
+    # Then the person fixes one by hand: undo must leave that alone.
+    [first] = await call(client, me, "GET", "todos/todo?order=id&limit=1")
+    await call(client, me, "PATCH", f"todos/todo?id=eq.{first['id']}", {"title": "mine"})
+    mass = (await call(client, me, "POST", "core/rpc/history", {"max_rows": 2}))[1]
+    assert mass["data"]["title"] == "spam"
+    result = await call(client, me, "POST", "core/rpc/undo", {"version": mass["id"]})
+    assert result["done"] == 2
+    assert [c["label"] for c in result["changed_since"]] == ["mine"]
+    titles = [t["title"] for t in await call(client, me, "GET", "todos/todo?order=id")]
+    assert titles == ["mine", "b", "c"]
+    # An undo is a change too: undoing it brings the spam back.
+    newest = (await call(client, me, "POST", "core/rpc/history", {"max_rows": 1}))[0]
+    await call(client, me, "POST", "core/rpc/undo", {"version": newest["id"]})
+    titles = [t["title"] for t in await call(client, me, "GET", "todos/todo?order=id")]
+    assert titles == ["mine", "spam", "spam"]
+
+
+async def test_restoring_a_delete_that_was_undone_is_a_conflict(
+    client: httpx.AsyncClient,
+) -> None:
+    me = as_user("hist-stale")
+    [todo] = await call(client, me, "POST", "todos/todo", {"title": "x"})
+    await call(client, me, "DELETE", f"todos/todo?id=eq.{todo['id']}")
+    [entry] = await call(client, me, "POST", "core/rpc/trash", {})
+    await call(client, me, "POST", "core/rpc/restore", {"version": entry["entry"]})
+    r = await client.post(
+        "/api/data/core/rpc/restore", json={"version": entry["entry"]}, headers=me
+    )
+    assert r.status_code == 409, r.text
 
 
 CRM_TABLES = (

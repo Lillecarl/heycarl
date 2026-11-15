@@ -1,11 +1,16 @@
 -- History and trash for the calling person (DESIGN.md, migration 0007).
 --
 -- SECURITY DEFINER throughout: no API role reads heycarl_private. Each
--- function filters on the caller's sub, and the helpers in heycarl_private
--- are revoked from everyone else. Table names come from the tracked list,
--- never from the request.
+-- function filters on the caller's sub. Table names come from the tracked
+-- list, never from the request.
+--
+-- The helpers live in heycarl_history, dropped and recreated on every
+-- start like the API schema: in heycarl_private, a changed signature
+-- would fail `create or replace` and stop the kernel starting.
+drop schema if exists heycarl_history cascade;
+create schema heycarl_history;
 
-create or replace function heycarl_private.caller() returns text
+create function heycarl_history.caller() returns text
   language plpgsql stable
   set search_path = pg_catalog, pg_temp
   as $$
@@ -18,7 +23,7 @@ end
 $$;
 
 -- A record's newest version is a delete: it is in the trash.
-create or replace function heycarl_private.deleted(me text)
+create function heycarl_history.deleted(me text)
   returns setof heycarl_private.version
   language sql stable
   set search_path = pg_catalog, pg_temp
@@ -29,7 +34,7 @@ create or replace function heycarl_private.deleted(me text)
                         where n.rel = v.rel and n.key = v.key and n.id > v.id)
   $$;
 
-create or replace function heycarl_private.label(data jsonb) returns text
+create function heycarl_history.label(data jsonb) returns text
   language sql immutable
   as $$
     select left(coalesce(
@@ -38,7 +43,7 @@ create or replace function heycarl_private.label(data jsonb) returns text
       nullif(data ->> 'label', ''), ''), 120)
   $$;
 
-create or replace function heycarl_private.describe(v heycarl_private.version) returns jsonb
+create function heycarl_history.describe(v heycarl_private.version) returns jsonb
   language sql stable
   set search_path = pg_catalog, pg_temp
   as $$
@@ -47,23 +52,29 @@ create or replace function heycarl_private.describe(v heycarl_private.version) r
       'scope', regexp_replace(n.nspname, '^heycarl_plugin_', ''),
       'table', c.relname,
       'key', v.key,
-      'label', heycarl_private.label(v.data))
+      'label', heycarl_history.label(v.data))
       from pg_class c join pg_namespace n on n.oid = c.relnamespace
      where c.oid = v.rel
   $$;
 
-create or replace function heycarl_private.is_live(rel regclass, key jsonb) returns boolean
+create function heycarl_history.key_condition(rel regclass) returns text
+  language sql stable
+  set search_path = pg_catalog, pg_temp
+  as $$
+    select string_agg(format('t.%I = k.%I', c, c), ' and ')
+      from heycarl_private.tracked t, unnest(t.key_columns) c
+     where t.rel = key_condition.rel
+  $$;
+
+create function heycarl_history.is_live(rel regclass, key jsonb) returns boolean
   language plpgsql stable
   set search_path = pg_catalog, pg_temp
   as $$
 declare
-  cond text;
   hit boolean;
 begin
-  select string_agg(format('t.%I = k.%I', c, c), ' and ') into cond
-    from unnest((select key_columns from heycarl_private.tracked where tracked.rel = is_live.rel)) c;
   execute format('select exists (select from %s t, jsonb_populate_record(null::%s, $1) k where %s)',
-                 rel, rel, cond)
+                 rel, rel, heycarl_history.key_condition(rel))
     into hit using key;
   return hit;
 end
@@ -71,7 +82,7 @@ $$;
 
 -- Back under its old key. Only the columns both the stored row and the
 -- table have: one added since gets its default.
-create or replace function heycarl_private.reinsert(v heycarl_private.version) returns void
+create function heycarl_history.reinsert(v heycarl_private.version) returns void
   language plpgsql
   set search_path = pg_catalog, pg_temp
   as $$
@@ -89,40 +100,167 @@ end
 $$;
 
 -- A live row gets a stored state back, except its key, its owner and its
--- bookkeeping columns: an old reminder state must not send it again.
-create or replace function heycarl_private.rewrite(v heycarl_private.version) returns boolean
+-- bookkeeping columns.
+create function heycarl_history.rewrite(v heycarl_private.version) returns void
   language plpgsql
   set search_path = pg_catalog, pg_temp
   as $$
 declare
   t heycarl_private.tracked;
   sets text;
-  cond text;
-  n integer;
 begin
   select * into strict t from heycarl_private.tracked where rel = v.rel;
-  select string_agg(format('%I = r.%I', a.attname, a.attname), ', ') into sets
+  select string_agg(format('%I = k.%I', a.attname, a.attname), ', ') into sets
     from pg_attribute a
    where a.attrelid = v.rel and a.attnum > 0 and not a.attisdropped
      and a.attgenerated = '' and a.attidentity <> 'a' and v.data ? a.attname
      and a.attname <> 'owner_sub'
      and not a.attname = any (t.key_columns)
      and not a.attname = any (t.ignore_columns);
-  if sets is null then
-    return false;
+  if sets is not null then
+    execute format('update %s t set %s from jsonb_populate_record(null::%s, $1) k'
+                   ' where %s and t.owner_sub = $2', v.rel, sets, v.rel,
+                   heycarl_history.key_condition(v.rel))
+      using v.data, v.owner_sub;
   end if;
-  select string_agg(format('t.%I = r.%I', c, c), ' and ') into cond from unnest(t.key_columns) c;
-  execute format('update %s t set %s from jsonb_populate_record(null::%s, $1) r'
-                 ' where %s and t.owner_sub = $2', v.rel, sets, v.rel, cond)
-    using v.data, v.owner_sub;
-  get diagnostics n = row_count;
-  return n > 0;
 end
 $$;
 
-revoke execute on function heycarl_private.caller, heycarl_private.deleted,
-  heycarl_private.label, heycarl_private.describe, heycarl_private.is_live,
-  heycarl_private.reinsert, heycarl_private.rewrite from public;
+create function heycarl_history.remove(v heycarl_private.version) returns void
+  language plpgsql
+  set search_path = pg_catalog, pg_temp
+  as $$
+begin
+  execute format('delete from %s t using jsonb_populate_record(null::%s, $1) k'
+                 ' where %s and t.owner_sub = $2', v.rel, v.rel,
+                 heycarl_history.key_condition(v.rel))
+    using v.key, v.owner_sub;
+end
+$$;
+
+-- Plugins read this to tell a restore from a person's own change: the
+-- reminders plugin does not re-arm a reminder whose old time comes back.
+create function heycarl_history.restoring() returns void
+  language sql volatile
+  as $$ select set_config('heycarl.restoring', 'on', true) $$;
+
+-- Puts every record that transaction (tx, at) changed back to its state
+-- before it. A record changed since is left alone and reported: undo never
+-- overwrites later work. Steps run in passes, each in a savepoint, until a
+-- pass makes no progress, because a child fails until its parent is back.
+create function heycarl_history.undo(me text, of_tx xid8, of_at timestamptz) returns jsonb
+  language plpgsql volatile
+  set search_path = pg_catalog, pg_temp
+  as $$
+declare
+  rec record;
+  pending jsonb := '[]';
+  still jsonb;
+  step jsonb;
+  failed jsonb := '[]';
+  skipped jsonb := '[]';
+  progress boolean;
+  done integer := 0;
+  prior heycarl_private.version;
+  newest heycarl_private.version;
+begin
+  perform heycarl_history.restoring();
+  for rec in
+    select v.rel, v.key, min(v.id) as first_id, max(v.id) as last_id
+      from heycarl_private.version v
+     where v.owner_sub = me and v.tx = of_tx and v.at = of_at
+     group by v.rel, v.key
+     order by min(v.id)
+  loop
+    select * into strict newest from heycarl_private.version
+     where rel = rec.rel and key = rec.key order by id desc limit 1;
+    if newest.id <> rec.last_id then
+      skipped := skipped || heycarl_history.describe(newest);
+      continue;
+    end if;
+    pending := pending || jsonb_build_object('first', rec.first_id, 'newest', newest.id);
+  end loop;
+
+  loop
+    progress := false;
+    still := '[]';
+    for step in select * from jsonb_array_elements(pending) loop
+      select * into strict newest from heycarl_private.version where id = (step ->> 'newest')::bigint;
+      select * into prior from heycarl_private.version p
+       where p.rel = newest.rel and p.key = newest.key and p.id < (step ->> 'first')::bigint
+       order by p.id desc limit 1;
+      begin
+        if prior.id is null or prior.op = 'delete' then
+          -- Made in that transaction: undoing it deletes it, to the trash.
+          if newest.op <> 'delete' then
+            perform heycarl_history.remove(newest);
+          end if;
+        elsif newest.op = 'delete' then
+          -- Ignored columns change without a version, so the earlier state
+          -- holds stale ones: a date would come back without its
+          -- reminder_id, unlinked. The delete holds their last values.
+          prior.data := prior.data || coalesce((
+            select jsonb_object_agg(c, newest.data -> c)
+              from heycarl_private.tracked t, unnest(t.ignore_columns) c
+             where t.rel = newest.rel and newest.data ? c), '{}');
+          if not heycarl_history.is_live(prior.rel, prior.key) then
+            perform heycarl_history.reinsert(prior);
+          end if;
+        else
+          perform heycarl_history.rewrite(prior);
+        end if;
+        done := done + 1;
+        progress := true;
+      exception when others then
+        still := still || (step || jsonb_build_object('error', sqlerrm));
+      end;
+    end loop;
+    pending := still;
+    exit when not progress or jsonb_array_length(pending) = 0;
+  end loop;
+
+  for step in select * from jsonb_array_elements(pending) loop
+    failed := failed || (heycarl_history.describe(
+      (select v from heycarl_private.version v where v.id = (step ->> 'newest')::bigint))
+      || jsonb_build_object('error', step ->> 'error'));
+  end loop;
+  return jsonb_build_object('done', done, 'failed', failed, 'changed_since', skipped);
+end
+$$;
+
+-- The kernel sets via = app only for a browser session. An MCP token says
+-- mcp:<client>, so no client can destroy what it deleted.
+create function heycarl_history.app_only() returns void
+  language plpgsql stable
+  set search_path = pg_catalog, pg_temp
+  as $$
+begin
+  if heycarl_sdk.claims() ->> 'via' is distinct from 'app' then
+    raise exception 'only the app can delete history' using errcode = '42501';
+  end if;
+end
+$$;
+
+create function heycarl_history.purge(me text, of_tx xid8, of_at timestamptz) returns integer
+  language plpgsql volatile
+  set search_path = pg_catalog, pg_temp
+  as $$
+declare
+  n integer;
+begin
+  with doomed as materialized (
+    select d.rel, d.key from heycarl_history.deleted(me) d
+     where of_tx is null or (d.tx = of_tx and d.at = of_at))
+  delete from heycarl_private.version v using doomed
+   where v.rel = doomed.rel and v.key = doomed.key and v.owner_sub = me;
+  get diagnostics n = row_count;
+  return n;
+end
+$$;
+
+revoke all on schema heycarl_history from public;
+
+-- The API.
 
 create function heycarl.history(
   of_scope text default null,
@@ -138,13 +276,13 @@ create function heycarl.history(
   set search_path = pg_catalog, pg_temp
   as $$
     select v.id, regexp_replace(n.nspname, '^heycarl_plugin_', ''), c.relname, v.key,
-           v.op, v.data, v.at, v.via, heycarl_private.label(v.data),
+           v.op, v.data, v.at, v.via, heycarl_history.label(v.data),
            not exists (select from heycarl_private.version w
                         where w.rel = v.rel and w.key = v.key and w.id > v.id)
       from heycarl_private.version v
       join pg_class c on c.oid = v.rel
       join pg_namespace n on n.oid = c.relnamespace
-     where v.owner_sub = heycarl_private.caller()
+     where v.owner_sub = heycarl_history.caller()
        and (of_scope is null or n.nspname = 'heycarl_plugin_' || of_scope)
        and (of_table is null or c.relname = of_table)
        and (of_key is null or v.key = of_key)
@@ -162,90 +300,68 @@ create function heycarl.trash() returns table (
   set search_path = pg_catalog, pg_temp
   as $$
     select min(d.id), d.at, min(d.via),
-           jsonb_agg(heycarl_private.describe(d) order by d.id)
-      from heycarl_private.deleted(heycarl_private.caller()) d
+           jsonb_agg(heycarl_history.describe(d) order by d.id)
+      from heycarl_history.deleted(heycarl_history.caller()) d
      group by d.tx, d.at
      order by d.at desc
   $$;
 
+-- Undoes the whole transaction that made this version: a mass change,
+-- or a delete with everything it took along.
+create function heycarl.undo(version bigint) returns jsonb
+  language plpgsql volatile security definer
+  set search_path = pg_catalog, pg_temp
+  as $$
+declare
+  me text := heycarl_history.caller();
+  v heycarl_private.version;
+begin
+  select * into v from heycarl_private.version where id = undo.version and owner_sub = me;
+  if not found then
+    -- PTnnn: PostgREST answers with HTTP status nnn.
+    raise exception 'no version %', undo.version using errcode = 'PT404';
+  end if;
+  return heycarl_history.undo(me, v.tx, v.at);
+end
+$$;
+
+-- One record back to this version's state. A trash entry's delete version
+-- brings back the whole entry.
 create function heycarl.restore(version bigint) returns jsonb
   language plpgsql volatile security definer
   set search_path = pg_catalog, pg_temp
   as $$
 declare
-  me text := heycarl_private.caller();
+  me text := heycarl_history.caller();
   v heycarl_private.version;
   newest heycarl_private.version;
-  pending bigint[] := '{}';
-  failed jsonb := '{}';
-  r heycarl_private.version;
-  pid bigint;
-  progress boolean;
-  restored integer := 0;
-  updated boolean := false;
+  result jsonb := jsonb_build_object('done', 0, 'failed', '[]'::jsonb, 'changed_since', '[]'::jsonb);
 begin
-  select * into v from heycarl_private.version
-   where id = restore.version and owner_sub = me;
+  select * into v from heycarl_private.version where id = restore.version and owner_sub = me;
   if not found then
-    -- PTnnn: PostgREST answers with HTTP status nnn.
     raise exception 'no version %', restore.version using errcode = 'PT404';
   end if;
   select * into strict newest from heycarl_private.version
    where rel = v.rel and key = v.key order by id desc limit 1;
-
+  if v.op = 'delete' and v.id <> newest.id then
+    raise exception 'this record came back after that delete' using errcode = 'PT409';
+  end if;
   if newest.op = 'delete' then
-    select coalesce(array_agg(d.id order by d.id), '{}') into pending
-      from heycarl_private.deleted(me) d
-     where d.tx = newest.tx and d.at = newest.at;
-    -- A child fails until its parent is back, so pass again while a pass
-    -- adds something. What still fails stays in the trash.
-    loop
-      progress := false;
-      foreach pid in array pending loop
-        select * into strict r from heycarl_private.version where id = pid;
-        begin
-          if not heycarl_private.is_live(r.rel, r.key) then
-            perform heycarl_private.reinsert(r);
-            restored := restored + 1;
-          end if;
-          pending := array_remove(pending, pid);
-          failed := failed - pid::text;
-          progress := true;
-        exception when others then
-          failed := failed || jsonb_build_object(pid::text, sqlerrm);
-        end;
-      end loop;
-      exit when not progress or cardinality(pending) = 0;
-    end loop;
+    result := heycarl_history.undo(me, newest.tx, newest.at);
   end if;
-
   if v.op <> 'delete' and v.id <> newest.id then
-    updated := heycarl_private.rewrite(v);
+    perform heycarl_history.restoring();
+    begin
+      perform heycarl_history.rewrite(v);
+      result := jsonb_set(result, '{done}', to_jsonb((result ->> 'done')::integer + 1));
+    exception when others then
+      result := jsonb_set(result, '{failed}', (result -> 'failed')
+        || (heycarl_history.describe(v) || jsonb_build_object('error', sqlerrm)));
+    end;
   end if;
-
-  return jsonb_build_object(
-    'restored', restored,
-    'updated', updated,
-    'failed', (
-      select coalesce(jsonb_agg(heycarl_private.describe(x) || jsonb_build_object('error', f.value)), '[]')
-        from jsonb_each_text(failed) f
-        join heycarl_private.version x on x.id = f.key::bigint));
+  return result;
 end
 $$;
-
-create or replace function heycarl_private.purge_app_only() returns void
-  language plpgsql stable
-  set search_path = pg_catalog, pg_temp
-  as $$
-begin
-  -- The kernel sets via = app only for a browser session. An MCP token
-  -- says mcp:<client>, so no client can destroy what it deleted.
-  if heycarl_sdk.claims() ->> 'via' is distinct from 'app' then
-    raise exception 'only the app can delete history' using errcode = '42501';
-  end if;
-end
-$$;
-revoke execute on function heycarl_private.purge_app_only from public;
 
 -- Deletes a trash entry for good: every version of its records.
 create function heycarl.purge(entry bigint) returns integer
@@ -253,22 +369,15 @@ create function heycarl.purge(entry bigint) returns integer
   set search_path = pg_catalog, pg_temp
   as $$
 declare
-  me text := heycarl_private.caller();
+  me text := heycarl_history.caller();
   e heycarl_private.version;
-  n integer;
 begin
-  perform heycarl_private.purge_app_only();
-  select * into e from heycarl_private.deleted(me) where id = purge.entry;
+  perform heycarl_history.app_only();
+  select * into e from heycarl_history.deleted(me) where id = purge.entry;
   if not found then
     raise exception 'no trash entry %', purge.entry using errcode = 'PT404';
   end if;
-  with doomed as materialized (
-    select d.rel, d.key from heycarl_private.deleted(me) d
-     where d.tx = e.tx and d.at = e.at)
-  delete from heycarl_private.version v using doomed
-   where v.rel = doomed.rel and v.key = doomed.key and v.owner_sub = me;
-  get diagnostics n = row_count;
-  return n;
+  return heycarl_history.purge(me, e.tx, e.at);
 end
 $$;
 
@@ -277,20 +386,14 @@ create function heycarl.empty_trash() returns integer
   set search_path = pg_catalog, pg_temp
   as $$
 declare
-  me text := heycarl_private.caller();
-  n integer;
+  me text := heycarl_history.caller();
 begin
-  perform heycarl_private.purge_app_only();
-  with doomed as materialized (
-    select d.rel, d.key from heycarl_private.deleted(me) d)
-  delete from heycarl_private.version v using doomed
-   where v.rel = doomed.rel and v.key = doomed.key and v.owner_sub = me;
-  get diagnostics n = row_count;
-  return n;
+  perform heycarl_history.app_only();
+  return heycarl_history.purge(me, null, null);
 end
 $$;
 
-revoke execute on function heycarl.history, heycarl.trash, heycarl.restore,
-  heycarl.purge, heycarl.empty_trash from public;
-grant execute on function heycarl.history, heycarl.trash, heycarl.restore,
-  heycarl.purge, heycarl.empty_trash to heycarl_user;
+revoke execute on function heycarl.history, heycarl.trash, heycarl.undo,
+  heycarl.restore, heycarl.purge, heycarl.empty_trash from public;
+grant execute on function heycarl.history, heycarl.trash, heycarl.undo,
+  heycarl.restore, heycarl.purge, heycarl.empty_trash to heycarl_user;
