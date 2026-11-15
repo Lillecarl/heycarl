@@ -20,6 +20,7 @@
 	{#each registry.pages as page (page.tag)}
 		<a href="/p/{page.plugin}/{page.tag}">{page.title}</a>
 	{/each}
+	<a href="/history">History</a>
 	<a href="/connect">Connect AI</a>
 	<button class="sign-out" onclick={signOut}>Sign out</button>
 </nav>

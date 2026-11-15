@@ -413,6 +413,8 @@ async def _issue(conn: AsyncConnection, grant_id: int, scopes: list[str]) -> OAu
 @dataclass(frozen=True, slots=True)
 class Grant:
     id: int
+    # History names the client by its id, in `via`.
+    client_id: str
     # Chosen by whoever registered the client; never proof of who it is.
     client_name: str | None
     redirect_hosts: list[str]
@@ -438,7 +440,16 @@ async def grants(pool: AsyncConnectionPool, sub: str) -> list[Grant]:
     for grant_id, info, scopes, created_at in rows:
         client = OAuthClientInformationFull.model_validate(info)
         hosts = sorted({urlsplit(str(u)).netloc for u in client.redirect_uris or []})
-        result.append(Grant(grant_id, client.client_name, hosts, scopes, created_at))
+        result.append(
+            Grant(
+                grant_id,
+                client.client_id or "",
+                client.client_name,
+                hosts,
+                scopes,
+                created_at,
+            )
+        )
     return result
 
 
