@@ -27,7 +27,13 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from . import mcpserver, migrations, oauth, oidc, postgrest, push, sessions
-from .access import AccessMiddleware, cookie_names, safe_next, set_cookie
+from .access import (
+    AccessMiddleware,
+    cookie_names,
+    inline_script_hashes,
+    safe_next,
+    set_cookie,
+)
 from .identity import Caller, caller
 from .storefiles import IMMUTABLE, REVALIDATE, StoreFiles, store_file, version
 from .tokens import Minter
@@ -230,7 +236,16 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             tg.cancel_scope.cancel()
 
     app = FastAPI(title="Hey Carl", lifespan=lifespan, docs_url=None, redoc_url=None)
-    app.add_middleware(AccessMiddleware, public_url=config.public_url)
+    index_html = (
+        (config.static_dir / "index.html").read_text()
+        if config.static_dir is not None
+        else ""
+    )
+    app.add_middleware(
+        AccessMiddleware,
+        public_url=config.public_url,
+        script_hashes=inline_script_hashes(index_html),
+    )
     names = cookie_names(config.public_url)
     redirect_uri = config.public_url + "/auth/callback"
     provider = oauth.Provider(lambda: app.state.pool, config.public_url)

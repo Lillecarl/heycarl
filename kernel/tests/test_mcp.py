@@ -160,6 +160,11 @@ async def consent_page(
     )
     assert page.status_code == 200, page.text
     assert '<p class="host">localhost</p>' in page.text
+    # Chrome checks form-action on the redirect after the POST.
+    assert (
+        "form-action 'self' http://localhost:3030;"
+        in page.headers["content-security-policy"]
+    )
     # Write is offered, and off until the person ticks it.
     assert 'value="write">' in page.text
     return request_id

@@ -9,7 +9,7 @@ the request to the SDK app, which matches the path again.
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from html import escape
 from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit
@@ -44,6 +44,7 @@ from pydantic import AnyUrl, BaseModel
 from starlette.routing import Route
 
 from . import oauth, postgrest
+from .access import content_security_policy
 from .identity import caller
 from .oauth import CONSENT_PATH, MCP_PATH, SCOPES, Provider, Scope
 
@@ -416,7 +417,9 @@ def mount(app: FastAPI, server: FastMCP) -> Starlette:
     return sdk_app
 
 
-def _page(body: str, status_code: int = 200) -> HTMLResponse:
+def _page(
+    body: str, status_code: int = 200, form_targets: Iterable[str] = ()
+) -> HTMLResponse:
     return HTMLResponse(
         "<!doctype html><html lang=en><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -429,7 +432,12 @@ def _page(body: str, status_code: int = 200) -> HTMLResponse:
         "button{font:inherit;padding:.6rem 1.2rem;margin:1rem .5rem 0 0}"
         "</style></head><body>" + body + "</body></html>",
         status_code=status_code,
-        headers={"cache-control": "no-store"},
+        headers={
+            "cache-control": "no-store",
+            "content-security-policy": content_security_policy(
+                form_targets=form_targets
+            ),
+        },
     )
 
 
@@ -476,7 +484,11 @@ def consent_router(provider: Provider) -> APIRouter:
         found = await provider.pending(request_id) if request_id else None
         if found is None:
             return _page(f"<p>{gone}</p>", status.HTTP_404_NOT_FOUND)
-        return _page(consent_html(request_id, *found))
+        redirect = urlsplit(str(found[1].redirect_uri))
+        return _page(
+            consent_html(request_id, *found),
+            form_targets=[f"{redirect.scheme}://{redirect.netloc}"],
+        )
 
     @router.post(CONSENT_PATH)
     async def decide(request: Request) -> Response:

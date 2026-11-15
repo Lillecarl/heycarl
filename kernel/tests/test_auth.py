@@ -23,7 +23,7 @@ import pytest
 import uvicorn
 from cryptography.hazmat.primitives.asymmetric import rsa
 from heycarl import oidc
-from heycarl.access import access_for, safe_next
+from heycarl.access import access_for, inline_script_hashes, safe_next
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -306,8 +306,27 @@ async def test_writes_need_this_origin(client: httpx.AsyncClient) -> None:
 async def test_security_headers(client: httpx.AsyncClient) -> None:
     r = await client.get("/healthz")
     assert r.headers["x-content-type-options"] == "nosniff"
-    assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
+    csp = r.headers["content-security-policy"]
+    assert "script-src 'self';" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "camera=()" in r.headers["permissions-policy"]
     assert r.headers["strict-transport-security"].startswith("max-age=")
+
+
+def test_inline_script_hashes() -> None:
+    html = (
+        '<script src="/a.js"></script><script type="module">boot()</script>'
+        "<SCRIPT>\nx\n</SCRIPT>"
+    )
+    assert inline_script_hashes(html) == [
+        "'sha256-" + _b64sha("boot()") + "'",
+        "'sha256-" + _b64sha("\nx\n") + "'",
+    ]
+
+
+def _b64sha(text: str) -> str:
+    return base64.b64encode(hashlib.sha256(text.encode()).digest()).decode()
 
 
 @needs_database

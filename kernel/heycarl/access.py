@@ -7,8 +7,11 @@ anywhere else is therefore private until someone lists it here.
 
 from __future__ import annotations
 
+import base64
 import enum
+import hashlib
 import json
+import re
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Final
@@ -17,6 +20,8 @@ from urllib.parse import quote, urlsplit
 from . import sessions
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from psycopg_pool import AsyncConnectionPool
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -120,11 +125,54 @@ def read_cookie(headers: list[tuple[bytes, bytes]], name: str) -> str | None:
     return None
 
 
-def security_headers(public_url: str) -> list[tuple[bytes, bytes]]:
+INLINE_SCRIPT: Final = re.compile(
+    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
+)
+PERMISSIONS_POLICY: Final = (
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(),"
+    " serial=(), bluetooth=(), display-capture=()"
+)
+
+
+def inline_script_hashes(html: str) -> list[str]:
+    """CSP sources for the inline scripts in `html`: SvelteKit's bootstrap."""
+    return [
+        "'sha256-"
+        + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+        + "'"
+        for body in INLINE_SCRIPT.findall(html)
+    ]
+
+
+def content_security_policy(
+    script_hashes: Iterable[str] = (), form_targets: Iterable[str] = ()
+) -> str:
+    """No script but this site's files and the hashed ones.
+
+    Styles allow inline: Svelte writes style attributes, and CSS alone does
+    not run code. `form_targets` adds origins a form may reach, because
+    Chrome checks form-action on the redirect after a POST too.
+    """
+    return "; ".join(
+        [
+            "default-src 'self'",
+            " ".join(["script-src 'self'", *script_hashes]),
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "object-src 'none'",
+            "base-uri 'none'",
+            " ".join(["form-action 'self'", *form_targets]),
+            "frame-ancestors 'none'",
+        ]
+    )
+
+
+def security_headers(public_url: str, csp: str) -> list[tuple[bytes, bytes]]:
     headers = [
         (b"x-content-type-options", b"nosniff"),
         (b"referrer-policy", b"same-origin"),
-        (b"content-security-policy", b"frame-ancestors 'none'"),
+        (b"content-security-policy", csp.encode()),
+        (b"permissions-policy", PERMISSIONS_POLICY.encode()),
         (b"cross-origin-opener-policy", b"same-origin"),
     ]
     if public_url.startswith("https://"):
@@ -142,11 +190,15 @@ def header(scope: Scope, name: bytes) -> str | None:
 class AccessMiddleware:
     """Pure ASGI: it never buffers a body, so MCP's event streams pass."""
 
-    def __init__(self, app: ASGIApp, *, public_url: str) -> None:
+    def __init__(
+        self, app: ASGIApp, *, public_url: str, script_hashes: Iterable[str] = ()
+    ) -> None:
         self.app = app
         self.public_url = public_url
         self.names = cookie_names(public_url)
-        self.extra = security_headers(public_url)
+        self.extra = security_headers(
+            public_url, content_security_policy(script_hashes)
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":

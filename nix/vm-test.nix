@@ -127,6 +127,18 @@ testers.runNixOSTest {
         assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/")
         assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/p/todos/heycarl-todos")
 
+    with subtest("the CSP allows the shell's own inline script and no other"):
+        import base64, hashlib, re
+        page = curl(f"-D - {as_alice} http://hey/")
+        head, body = page.split("\r\n\r\n", 1)
+        [csp] = [l.split(":", 1)[1] for l in head.split("\r\n") if l.lower().startswith("content-security-policy:")]
+        scripts = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", body, re.S)
+        assert scripts, body
+        for s in scripts:
+            digest = base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()
+            assert f"'sha256-{digest}'" in csp, csp
+        assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";")[0], csp
+
     with subtest("an unknown API path is a 404, not the shell"):
         assert status(f"{as_alice} http://hey/api/nope") == "404"
 
