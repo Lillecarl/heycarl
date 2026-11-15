@@ -88,6 +88,15 @@
 </details>
 
 <details>
+	<summary>OpenCode</summary>
+	<p>Add the server to <code>~/.config/opencode/opencode.json</code>, or to a project's <code>opencode.json</code>:</p>
+	<pre>{JSON.stringify({ mcp: { heycarl: { type: 'remote', url, enabled: true } } }, null, 2)}</pre>
+	<p>Then sign in, and approve on the Hey Carl page:</p>
+	<pre>opencode mcp auth heycarl</pre>
+	<p class="note"><code>opencode mcp list</code> shows whether it is connected; <code>opencode mcp debug heycarl</code> shows each sign-in step.</p>
+</details>
+
+<details>
 	<summary>Other clients</summary>
 	<p>
 		Any client that speaks MCP's Streamable HTTP transport with OAuth works. It finds everything
