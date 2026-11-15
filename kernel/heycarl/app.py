@@ -106,6 +106,8 @@ class PluginContext:
     # The one MCP server. Name tools <plugin>_<verb>, and reach data through
     # heycarl.mcpserver.call, which acts as the connection's person.
     mcp: FastMCP
+    # Argument completion for this plugin's prompts and resource templates.
+    completions: mcpserver.Completions
     # Mounted at /api/plugins/<name>, behind the gate.
     router: APIRouter = field(default_factory=APIRouter)
     # Mounted at /api/public/<name>. The gate lets these through with no
@@ -130,7 +132,10 @@ CallerDep = Annotated[Caller, Depends(caller)]
 
 
 def _register_backends(
-    app: FastAPI, plugins: list[Plugin], server: FastMCP
+    app: FastAPI,
+    plugins: list[Plugin],
+    server: FastMCP,
+    completions: mcpserver.Completions,
 ) -> list[PluginContext]:
     contexts = []
     for plugin in plugins:
@@ -141,7 +146,7 @@ def _register_backends(
         sys.path.insert(0, str(plugin.root / "python"))
         module = importlib.import_module(plugin.manifest.backend)
         register: Callable[[PluginContext], None] = module.register
-        ctx = PluginContext(plugin=plugin, mcp=server)
+        ctx = PluginContext(plugin=plugin, mcp=server, completions=completions)
         register(ctx)
         app.include_router(ctx.router, prefix=f"/api/plugins/{plugin.name}")
         app.include_router(ctx.public_router, prefix=f"/api/public/{plugin.name}")
@@ -229,7 +234,8 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     names = cookie_names(config.public_url)
     redirect_uri = config.public_url + "/auth/callback"
     provider = oauth.Provider(lambda: app.state.pool, config.public_url)
-    server = mcpserver.build(provider)
+    completions = mcpserver.Completions()
+    server = mcpserver.build(provider, completions)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -396,7 +402,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             headers=postgrest.response_headers(upstream.headers),
         )
 
-    contexts = _register_backends(app, plugins, server)
+    contexts = _register_backends(app, plugins, server, completions)
     app.include_router(mcpserver.consent_router(provider))
     sdk_app = mcpserver.mount(app, server)
 

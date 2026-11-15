@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Final
 import anyio
 import structlog
 
+from .context import register_context
 from .tools import register_tools
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ SYNC_SECONDS: Final = 3600.0
 def register(ctx: PluginContext) -> None:
     ctx.job(sync_forever)
     register_tools(ctx.mcp)
+    register_context(ctx)
 
 
 async def sync_forever(kernel: Kernel) -> None:

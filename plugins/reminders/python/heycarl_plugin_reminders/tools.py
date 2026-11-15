@@ -1,10 +1,10 @@
-"""MCP tools for reminders."""
+"""MCP tools and a resource for reminders."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from heycarl.mcpserver import call, confirm
+from heycarl.mcpserver import call, confirm, static_context
 from mcp.server.fastmcp import Context  # noqa: TC002 -- FastMCP reads it at runtime
 from mcp.types import ToolAnnotations
 
@@ -17,16 +17,30 @@ COLUMNS: Final = "id,title,body,due_at,state,sent_at"
 Rows = list[dict[str, Any]]
 
 
+async def reminders(ctx: Context, include_sent: bool = False) -> Rows:
+    params = {"select": COLUMNS, "order": "due_at"}
+    if not include_sent:
+        params["state"] = "in.(pending,sending,failed)"
+    return await call(ctx, SCOPE, "GET", "reminder", params=params)
+
+
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def reminders_list(
         ctx: Context, include_sent: bool = False
     ) -> dict[str, Rows]:
         """List reminders, the soonest first. Birthdays from People are here too."""
-        params = {"select": COLUMNS, "order": "due_at"}
-        if not include_sent:
-            params["state"] = "in.(pending,sending,failed)"
-        return {"reminders": await call(ctx, SCOPE, "GET", "reminder", params=params)}
+        return {"reminders": await reminders(ctx, include_sent)}
+
+    @mcp.resource(
+        "heycarl://reminders",
+        name="reminders",
+        title="Reminders",
+        description="Reminders not yet sent, the soonest first.",
+        mime_type="application/json",
+    )
+    async def reminders_resource() -> dict[str, Rows]:
+        return {"reminders": await reminders(static_context(mcp))}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     async def reminders_add(

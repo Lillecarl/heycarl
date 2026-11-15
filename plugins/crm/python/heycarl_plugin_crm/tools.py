@@ -53,15 +53,66 @@ DateKind = Literal["birthday", "anniversary", "memorial", "other"]
 Rows = list[dict[str, Any]]
 
 
+async def search(ctx: Context, query: str) -> Rows:
+    return await call(
+        ctx, SCOPE, "GET", "rpc/search", params={"q": query, "select": SUMMARY}
+    )
+
+
+async def person_detail(ctx: Context, person_id: int) -> dict[str, Any]:
+    rows: Rows = await call(
+        ctx,
+        SCOPE,
+        "GET",
+        "contact",
+        params=[("id", f"eq.{person_id}"), ("select", DETAIL), *DETAIL_ORDER],
+    )
+    if not rows:
+        raise ValueError(f"no person with id {person_id}")
+    person = rows[0]
+    person["timeline"] = await call(
+        ctx,
+        SCOPE,
+        "GET",
+        "timeline",
+        params={"contact_id": f"eq.{person_id}", "order": "at.desc", "limit": "20"},
+    )
+    return person
+
+
+async def upcoming(ctx: Context, days: int) -> dict[str, Rows]:
+    dates = await call(
+        ctx,
+        SCOPE,
+        "GET",
+        "important_date",
+        params={
+            "select": "id,kind,label,year,next_occurrence,days_until,turns,"
+            "contact(id,first_name,last_name)",
+            "days_until": f"lte.{days}",
+            "order": "days_until",
+        },
+    )
+    due = await call(
+        ctx,
+        SCOPE,
+        "GET",
+        "contact",
+        params={
+            "select": "id,first_name,last_name,last_contacted,touch_due",
+            "archived": "is.false",
+            "touch_due": f"lte.{date.today().isoformat()}",
+            "order": "touch_due",
+        },
+    )
+    return {"dates": dates, "get_in_touch": due}
+
+
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ)
     async def people_search(ctx: Context, query: str) -> dict[str, Rows]:
         """Find people by name, nickname, company, contact detail or tag."""
-        return {
-            "people": await call(
-                ctx, SCOPE, "GET", "rpc/search", params={"q": query, "select": SUMMARY}
-            )
-        }
+        return {"people": await search(ctx, query)}
 
     @mcp.tool(annotations=READ)
     async def people_list(
@@ -90,58 +141,13 @@ def register_tools(mcp: FastMCP) -> None:
     async def people_get(ctx: Context, person_id: int) -> dict[str, Any]:
         """Everything about one person: details, dates, relations, tags,
         gift ideas, the latest notes and the last 20 activities."""
-        rows: Rows = await call(
-            ctx,
-            SCOPE,
-            "GET",
-            "contact",
-            params=[("id", f"eq.{person_id}"), ("select", DETAIL), *DETAIL_ORDER],
-        )
-        if not rows:
-            raise ValueError(f"no person with id {person_id}")
-        person = rows[0]
-        person["timeline"] = await call(
-            ctx,
-            SCOPE,
-            "GET",
-            "timeline",
-            params={
-                "contact_id": f"eq.{person_id}",
-                "order": "at.desc",
-                "limit": "20",
-            },
-        )
-        return person
+        return await person_detail(ctx, person_id)
 
     @mcp.tool(annotations=READ)
     async def people_upcoming(ctx: Context, days: int = 30) -> dict[str, Rows]:
         """Birthdays and other dates coming up within `days`, and people
         it is time to get in touch with."""
-        dates = await call(
-            ctx,
-            SCOPE,
-            "GET",
-            "important_date",
-            params={
-                "select": "id,kind,label,year,next_occurrence,days_until,turns,"
-                "contact(id,first_name,last_name)",
-                "days_until": f"lte.{days}",
-                "order": "days_until",
-            },
-        )
-        due = await call(
-            ctx,
-            SCOPE,
-            "GET",
-            "contact",
-            params={
-                "select": "id,first_name,last_name,last_contacted,touch_due",
-                "archived": "is.false",
-                "touch_due": f"lte.{date.today().isoformat()}",
-                "order": "touch_due",
-            },
-        )
-        return {"dates": dates, "get_in_touch": due}
+        return await upcoming(ctx, days)
 
     @mcp.tool(annotations=WRITE)
     async def people_add(
