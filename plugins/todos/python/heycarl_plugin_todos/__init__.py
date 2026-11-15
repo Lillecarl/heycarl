@@ -13,8 +13,12 @@ from heycarl.mcpserver import (
     kernel_of,
     static_context,
 )
-from mcp.server.fastmcp import Context  # noqa: TC002 -- FastMCP reads it at runtime
-from mcp.server.fastmcp.prompts.base import Message, UserMessage
+from mcp.server.mcpserver import (
+    Context,
+    Message,
+    UserMessage,
+)
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 if TYPE_CHECKING:
@@ -69,7 +73,7 @@ def register(ctx: PluginContext) -> None:
             body={"done_at": datetime.now(UTC).isoformat() if done else None},
         )
         if not rows:
-            raise ValueError(f"no todo with id {todo_id}")
+            raise ToolError(f"no todo with id {todo_id}")
         return rows[0]
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -79,7 +83,7 @@ def register(ctx: PluginContext) -> None:
             ctx, SCOPE, "GET", "todo", params={"id": f"eq.{todo_id}", "select": "title"}
         )
         if not rows:
-            raise ValueError(f"no todo with id {todo_id}")
+            raise ToolError(f"no todo with id {todo_id}")
         await confirm(ctx, f"Delete the todo {rows[0]['title']!r}?")
         await call(ctx, SCOPE, "DELETE", "todo", params={"id": f"eq.{todo_id}"})
         return "deleted"

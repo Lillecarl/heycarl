@@ -51,7 +51,7 @@ from .tokens import Minter, Via
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from .config import Config
     from .plugins import Plugin
@@ -121,7 +121,7 @@ class PluginContext:
     plugin: Plugin
     # The one MCP server. Name tools <plugin>_<verb>, and reach data through
     # heycarl.mcpserver.call, which acts as the connection's person.
-    mcp: FastMCP
+    mcp: MCPServer
     # Argument completion for this plugin's prompts and resource templates.
     completions: mcpserver.Completions
     # Mounted at /api/plugins/<name>, behind the gate.
@@ -150,7 +150,7 @@ CallerDep = Annotated[Caller, Depends(caller)]
 def _register_backends(
     app: FastAPI,
     plugins: list[Plugin],
-    server: FastMCP,
+    server: MCPServer,
     completions: mcpserver.Completions,
 ) -> list[PluginContext]:
     contexts = []
@@ -460,7 +460,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     app.include_router(dav.router)
     contexts = _register_backends(app, plugins, server, completions)
     app.include_router(mcpserver.consent_router(provider))
-    sdk_app = mcpserver.mount(app, server)
+    sdk_app = mcpserver.mount(app, server, config.public_url)
 
     for plugin in plugins:
         if plugin.manifest.frontend is not None:

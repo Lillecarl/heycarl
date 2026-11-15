@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Iterable
+from contextvars import ContextVar
 from html import escape
 from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit
@@ -24,9 +25,8 @@ from mcp.server.auth.settings import (
     RevocationOptions,
 )
 from mcp.server.elicitation import AcceptedElicitation
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.fastmcp.prompts.base import UserMessage
+from mcp.server.mcpserver import Context, MCPServer, UserMessage
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import (
     ClientCapabilities,
@@ -40,7 +40,7 @@ from mcp.types import (
     TextResourceContents,
     ToolAnnotations,
 )
-from pydantic import AnyUrl, BaseModel
+from pydantic import BaseModel
 from starlette.routing import Route
 
 from . import migrations, oauth, postgrest
@@ -52,6 +52,7 @@ from .tokens import via_mcp
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from mcp.server.auth.provider import AccessToken, AuthorizationParams
+    from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
     from mcp.shared.auth import OAuthClientInformationFull
     from starlette.applications import Starlette
 
@@ -69,7 +70,7 @@ WRITE: Final = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 CORE_READ_RPC: Final = frozenset({"history", "trash", "links", "entries"})
 CORE_WRITE_RPC: Final = frozenset({"restore", "undo", "link", "unlink"})
 # Any: JSON values, whatever the table holds. A tool returns it inside an
-# object: FastMCP sends each item of a bare list as its own text block, and
+# object: MCPServer sends each item of a bare list as its own text block, and
 # a client that reads the text gets one object, or nothing for no rows.
 Json = dict[str, Any] | list[Any] | str | int | float | bool | None
 SCOPE_TEXT: Final = {
@@ -237,7 +238,7 @@ Completer = Callable[[Context, str], Awaitable[list[str]]]
 class Completions:
     """Argument completion for prompts and resource templates.
 
-    FastMCP takes one completion handler for the whole server, so plugins
+    MCPServer takes one completion handler for the whole server, so plugins
     add theirs here, keyed by the prompt's name or the template's URI.
     """
 
@@ -258,13 +259,32 @@ class Completions:
         return self._completers.get((key, argument))
 
 
-def static_context(server: FastMCP) -> Context:
+# Any: the lifespan and transport types, which this code never reads.
+_current: ContextVar[ServerRequestContext[Any, Any] | None] = ContextVar(
+    "heycarl_mcp_request", default=None
+)
+
+
+async def _remember_request(
+    ctx: ServerRequestContext[Any, Any], call_next: CallNext
+) -> HandlerResult:
+    reset = _current.set(ctx)
+    try:
+        return await call_next(ctx)
+    finally:
+        _current.reset(reset)
+
+
+def static_context(server: MCPServer) -> Context:
     """The context of the request a static resource or completion serves.
 
-    FastMCP passes a Context only to templates and tools; a resource with
-    one would become a template and drop out of resources/list.
+    MCPServer passes a Context only to templates, tools and prompts, and
+    refuses one on a static resource, so a middleware keeps the request.
     """
-    return server.get_context()
+    request = _current.get()
+    if request is None:
+        raise ToolError("no request")
+    return Context(request_context=request, mcp_server=server)
 
 
 # Notes and names are free text anyone near the owner could have supplied,
@@ -281,7 +301,7 @@ def embed(uri: str, data: object) -> UserMessage:
         content=EmbeddedResource(
             type="resource",
             resource=TextResourceContents(
-                uri=AnyUrl(uri),
+                uri=uri,
                 mimeType="application/json",
                 text=json.dumps(data, default=str, ensure_ascii=False),
             ),
@@ -296,9 +316,9 @@ def scopes_of(kernel: Kernel) -> dict[str, str]:
     }
 
 
-def build(provider: Provider, completions: Completions) -> FastMCP:
+def build(provider: Provider, completions: Completions) -> MCPServer:
     public_url = provider.public_url
-    server = FastMCP(
+    server = MCPServer(
         name="Hey Carl",
         instructions=INSTRUCTIONS,
         website_url=public_url,
@@ -314,16 +334,11 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
             # for; a read-only client would then never be offered write.
             # Each tool checks its scope itself instead.
             required_scopes=None,
+            # /authorize refuses a resource other than this server, so
+            # every token is for it; a token with no resource stays valid.
+            validate_token_resource=False,
         ),
-        # The default trusts localhost only. A request through Caddy keeps
-        # its Host header.
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=[urlsplit(public_url).netloc],
-            allowed_origins=[public_url],
-        ),
-        # Elicitation and progress need the session.
-        stateless_http=False,
+        middleware=[_remember_request],
     )
 
     @server.tool()
@@ -561,10 +576,20 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
     return server
 
 
-def mount(app: FastAPI, server: FastMCP) -> Starlette:
+def mount(app: FastAPI, server: MCPServer, public_url: str) -> Starlette:
     """Returns the SDK app. A tool's request belongs to it, not to `app`, so
     the kernel sets `state.kernel` on both."""
-    sdk_app = server.streamable_http_app()
+    sdk_app = server.streamable_http_app(
+        # The default trusts localhost only. A request through Caddy keeps
+        # its Host header.
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[urlsplit(public_url).netloc],
+            allowed_origins=[public_url],
+        ),
+        # Elicitation and progress need the session.
+        stateless_http=False,
+    )
     for route in sdk_app.routes:
         if isinstance(route, Route):
             app.router.add_route(route.path, sdk_app, include_in_schema=False)

@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from heycarl.mcpserver import call, confirm, static_context
-from mcp.server.fastmcp import Context  # noqa: TC002 -- FastMCP reads it at runtime
+from mcp.server.mcpserver import Context  # noqa: TC002 -- MCPServer reads it at runtime
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 SCOPE: Final = "reminders"
 COLUMNS: Final = "id,title,body,due_at,state,sent_at"
@@ -24,7 +25,7 @@ async def reminders(ctx: Context, include_sent: bool = False) -> Rows:
     return await call(ctx, SCOPE, "GET", "reminder", params=params)
 
 
-def register_tools(mcp: FastMCP) -> None:
+def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def reminders_list(
         ctx: Context, include_sent: bool = False
@@ -71,7 +72,7 @@ def register_tools(mcp: FastMCP) -> None:
             body={"due_at": due_at},
         )
         if not rows:
-            raise ValueError(f"no reminder with id {reminder_id}")
+            raise ToolError(f"no reminder with id {reminder_id}")
         return rows[0]
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -85,7 +86,7 @@ def register_tools(mcp: FastMCP) -> None:
             params={"id": f"eq.{reminder_id}", "select": "title"},
         )
         if not rows:
-            raise ValueError(f"no reminder with id {reminder_id}")
+            raise ToolError(f"no reminder with id {reminder_id}")
         await confirm(ctx, f"Delete the reminder {rows[0]['title']!r}?")
         await call(ctx, SCOPE, "DELETE", "reminder", params={"id": f"eq.{reminder_id}"})
         return "deleted"

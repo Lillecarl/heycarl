@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from heycarl.mcpserver import UNTRUSTED, call, embed, static_context
-from mcp.server.fastmcp import Context  # noqa: TC002 -- FastMCP reads it at runtime
-from mcp.server.fastmcp.prompts.base import Message, UserMessage
+from mcp.server.mcpserver import (
+    Context,
+    Message,
+    UserMessage,
+)
 
 from .tools import SCOPE, SUMMARY, Rows, person_detail, search, upcoming
 

@@ -13,21 +13,25 @@ import json
 import secrets
 import socket
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import httpx
+import httpx2
 import psycopg
 import pytest
 import uvicorn
 from mcp import ClientSession, types
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
-from mcp.shared.exceptions import McpError
-from pydantic import AnyUrl
+from mcp.shared.auth import (
+    AuthorizationCodeResult,
+    OAuthClientInformationFull,
+    OAuthClientMetadata,
+    OAuthToken,
+)
+from mcp.shared.exceptions import MCPError
 from sse_starlette.sse import AppStatus
 
 from .conftest import PUBLIC_URL, _conninfo, as_user, needs_database
@@ -45,16 +49,16 @@ REDIRECT = "http://localhost:3030/callback"
 RESOURCE_METADATA = PUBLIC_URL + "/.well-known/oauth-protected-resource/mcp"
 
 
-class Plain(httpx.AsyncBaseTransport):
+class Plain(httpx2.AsyncBaseTransport):
     """Sends https://hey.example.com to the kernel's socket as plain HTTP.
 
     Caddy ends TLS in production; the Host header still names the site.
     """
 
     def __init__(self, socket_path: Path) -> None:
-        self.inner = httpx.AsyncHTTPTransport(uds=str(socket_path))
+        self.inner = httpx2.AsyncHTTPTransport(uds=str(socket_path))
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         request.url = request.url.copy_with(scheme="http")
         return await self.inner.handle_async_request(request)
 
@@ -172,7 +176,7 @@ async def consent_page(
 
 
 async def decide(
-    site: httpx.AsyncClient,
+    site: httpx.AsyncClient | httpx2.AsyncClient,
     request_id: str,
     browser: dict[str, str],
     decision: str = "approve",
@@ -240,7 +244,7 @@ async def connected_inner(
     scopes: tuple[str, ...],
     elicitation: ElicitationFnT | None,
 ) -> AsyncIterator[ClientSession]:
-    async with httpx.AsyncClient(transport=served, base_url=PUBLIC_URL) as site:
+    async with httpx2.AsyncClient(transport=served, base_url=PUBLIC_URL) as site:
 
         async def redirect_handler(url: str) -> None:
             r = await site.get(url, headers=browser)
@@ -248,8 +252,13 @@ async def connected_inner(
             request_id = parse_qs(urlsplit(r.headers["location"]).query)["request"][0]
             answer.update(await decide(site, request_id, browser, scopes=scopes))
 
-        async def callback_handler() -> tuple[str, str | None]:
-            return answer["code"][0], answer["state"][0]
+        async def callback_handler() -> AuthorizationCodeResult:
+            iss = answer.get("iss")
+            return AuthorizationCodeResult(
+                code=answer["code"][0],
+                state=answer["state"][0],
+                iss=None if iss is None else iss[0],
+            )
 
         auth = OAuthClientProvider(
             server_url=PUBLIC_URL + "/mcp",
@@ -264,22 +273,21 @@ async def connected_inner(
             callback_handler=callback_handler,
         )
         async with (
-            httpx.AsyncClient(transport=served, auth=auth, timeout=10) as http,
+            httpx2.AsyncClient(transport=served, auth=auth, timeout=10) as http,
             streamable_http_client(PUBLIC_URL + "/mcp", http_client=http) as (
                 read,
                 write,
-                _,
             ),
             ClientSession(read, write, elicitation_callback=elicitation) as session,
         ):
             init = await session.initialize()
-            assert init.serverInfo.name == "Hey Carl"
+            assert init.server_info.name == "Hey Carl"
             yield session
 
 
 # A call with no answer fails here, naming itself, before the suite's
 # faulthandler_timeout ends the run without saying which call hung.
-CALL_TIMEOUT: Final = timedelta(seconds=20)
+CALL_TIMEOUT: Final = 20.0
 SESSION_TIMEOUT: Final = 45
 
 
@@ -291,9 +299,9 @@ async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
     does: one block, the same JSON. A bare list breaks this, one block per item.
     """
     result = await session.call_tool(name, arguments, read_timeout_seconds=CALL_TIMEOUT)
-    assert not result.isError, result.content
-    assert result.structuredContent is not None, result
-    content = result.structuredContent
+    assert not result.is_error, result.content
+    assert result.structured_content is not None, result
+    content = result.structured_content
     [block] = result.content
     assert isinstance(block, types.TextContent), block
     if set(content) == {"result"} and isinstance(content["result"], str):
@@ -305,7 +313,7 @@ async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
 
 async def failure(session: ClientSession, name: str, **arguments: object) -> str:
     result = await session.call_tool(name, arguments, read_timeout_seconds=CALL_TIMEOUT)
-    assert result.isError, result
+    assert result.is_error, result
     return " ".join(getattr(c, "text", "") for c in result.content)
 
 
@@ -798,16 +806,16 @@ async def test_resources_list_read_and_stay_private(served: Plain) -> None:
             "heycarl://reminders",
         } <= listed, listed
         templates = {
-            t.uriTemplate
-            for t in (await session.list_resource_templates()).resourceTemplates
+            t.uri_template
+            for t in (await session.list_resource_templates()).resource_templates
         }
         assert {"heycarl://people/{person_id}", "heycarl://schema/{scope}"} <= templates
 
         async def read(uri: str) -> Any:
-            result = await session.read_resource(AnyUrl(uri))
+            result = await session.read_resource(uri)
             [content] = result.contents
             assert isinstance(content, types.TextResourceContents), content
-            assert content.mimeType == "application/json"
+            assert content.mime_type == "application/json"
             return json.loads(content.text)
 
         assert [
@@ -821,12 +829,12 @@ async def test_resources_list_read_and_stay_private(served: Plain) -> None:
         assert "contact" in (await read("heycarl://schema/crm"))["tables"]
         assert "get_in_touch" in await read("heycarl://people/upcoming")
     async with connected(served, sub="kim-sub") as session:
-        assert (await session.read_resource(AnyUrl("heycarl://people"))).contents
+        assert (await session.read_resource("heycarl://people")).contents
         assert json.loads(
-            (await session.read_resource(AnyUrl("heycarl://people"))).contents[0].text  # pyrefly: ignore[missing-attribute]
+            (await session.read_resource("heycarl://people")).contents[0].text  # pyrefly: ignore[missing-attribute]
         ) == {"people": []}
-        with pytest.raises(McpError):
-            await session.read_resource(AnyUrl(f"heycarl://people/{anna['id']}"))
+        with pytest.raises(MCPError):
+            await session.read_resource(f"heycarl://people/{anna['id']}")
 
 
 async def test_prompts_embed_records_and_complete_names(served: Plain) -> None:

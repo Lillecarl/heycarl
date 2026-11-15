@@ -10,11 +10,12 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from heycarl.mcpserver import call, confirm
-from mcp.server.fastmcp import Context  # noqa: TC002 -- FastMCP reads it at runtime
+from mcp.server.mcpserver import Context  # noqa: TC002 -- MCPServer reads it at runtime
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 SCOPE: Final = "crm"
 READ: Final = ToolAnnotations(readOnlyHint=True)
@@ -55,7 +56,7 @@ RelationKind = Literal[
 ]  # fmt: skip
 
 # Any: PostgREST rows, JSON of the shape the select asks for. A tool never
-# returns Rows bare: FastMCP sends each item of a list as its own text block,
+# returns Rows bare: MCPServer sends each item of a list as its own text block,
 # so a client reads one person as an object and none as no answer.
 Rows = list[dict[str, Any]]
 
@@ -75,7 +76,7 @@ async def person_detail(ctx: Context, person_id: int) -> dict[str, Any]:
         params=[("id", f"eq.{person_id}"), ("select", DETAIL), *DETAIL_ORDER],
     )
     if not rows:
-        raise ValueError(f"no person with id {person_id}")
+        raise ToolError(f"no person with id {person_id}")
     person = rows[0]
     person["timeline"] = await call(
         ctx,
@@ -115,7 +116,7 @@ async def upcoming(ctx: Context, days: int) -> dict[str, Rows]:
     return {"dates": dates, "get_in_touch": due}
 
 
-def register_tools(mcp: FastMCP) -> None:
+def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(annotations=READ)
     async def people_search(ctx: Context, query: str) -> dict[str, Rows]:
         """Find people by name, nickname, company, contact detail or tag."""
@@ -204,7 +205,7 @@ def register_tools(mcp: FastMCP) -> None:
         }
         unknown = set(changes) - allowed
         if unknown:
-            raise ValueError(f"cannot change {sorted(unknown)}")
+            raise ToolError(f"cannot change {sorted(unknown)}")
         rows: Rows = await call(
             ctx,
             SCOPE,
@@ -214,7 +215,7 @@ def register_tools(mcp: FastMCP) -> None:
             body=changes,
         )
         if not rows:
-            raise ValueError(f"no person with id {person_id}")
+            raise ToolError(f"no person with id {person_id}")
         return rows[0]
 
     @mcp.tool(annotations=WRITE)
@@ -324,7 +325,7 @@ def register_tools(mcp: FastMCP) -> None:
             params={"id": f"eq.{relationship_id}"},
         )
         if not rows:
-            raise ValueError(f"no relation with id {relationship_id}")
+            raise ToolError(f"no relation with id {relationship_id}")
         return "removed"
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -339,7 +340,7 @@ def register_tools(mcp: FastMCP) -> None:
             params={"id": f"eq.{person_id}", "select": "first_name,last_name"},
         ) or [None]
         if person is None:
-            raise ValueError(f"no person with id {person_id}")
+            raise ToolError(f"no person with id {person_id}")
         name = f"{person['first_name']} {person['last_name']}".strip()
         await confirm(ctx, f"Delete {name} and everything recorded about them?")
         await call(ctx, SCOPE, "DELETE", "contact", params={"id": f"eq.{person_id}"})
