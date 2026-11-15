@@ -203,6 +203,59 @@ custom connectors) and local agents. Decided:
   instructions: notes are free text.
 - Not yet built: resource subscriptions and tasks.
 
+## App passwords
+
+CalDAV and CardDAV clients cannot sign in through OIDC. They send HTTP
+Basic credentials on every request. An app password is that credential,
+one per device, and it works under `/dav/` only (issue #1).
+
+PostgreSQL holds every rule, and the kernel never reads the table as
+`heycarl_owner`. The kernel only reaches PostgREST, as for any data:
+
+- `heycarl.app_password` is a `security_invoker` view without the hash.
+  A person lists and revokes (DELETE) through it, under RLS. The Connect
+  page uses the plain `/api/data/core/` proxy; the kernel has no routes.
+- `heycarl.app_password_create(name, write, days)` is the only way in. It
+  is SECURITY DEFINER because the caller may not choose the hash. It makes
+  a 256-bit secret with pgcrypto, stores its SHA-256, returns it once, and
+  takes the owner from the token's `sub` and the address from its `email`.
+  The secret has full entropy, so a slow hash adds nothing.
+- `heycarl.dav_authenticate(username, secret, address)` checks a Basic
+  credential. Only the new role `heycarl_gate` may run it, and that role
+  may run nothing else. The kernel calls it with a 60-second gate token,
+  as it calls `claim_due` with a worker token. It counts failures, refuses
+  when throttled, and records use in the same transaction.
+- The username is the password's own random id, not the email, so each
+  device has its own pair and a guessed username names nobody. A wrong
+  username and a wrong password get the same answer.
+- Each password has a name, scopes (`read`, or `read write`) and an
+  expiry of at most a year. Revocation, expiry and an `allowedEmails`
+  change take effect on the next request: the kernel checks the email
+  that `dav_authenticate` returns, as it does for sessions.
+- The data proxy now puts the session's `email` in the token, beside
+  `sub`, so SQL can record who made a password.
+- `access.py` gives `/dav`, `/dav/` and `/.well-known/caldav|carddav`
+  their own kind, `DAV`. Basic credentials count on no other path, and a
+  cookie never counts on these. A request with a foreign `Origin`, or
+  `Sec-Fetch-Site: cross-site`, is refused: a browser that cached the
+  credentials must not carry them for another site.
+- A read-only password may use GET, HEAD, OPTIONS, PROPFIND and REPORT
+  only. The gate checks this before any route runs.
+- Failed attempts go into `heycarl_private.auth_failure`. Past 10 a
+  username, or 20 an address, in 15 minutes, the gate answers 429 and
+  checks nothing. Past 10000 in all, it refuses every attempt, so the
+  failure rows themselves stay bounded. The address is the last
+  `X-Forwarded-For` entry, which Caddy writes.
+- No MCP tool lists or makes app passwords: an AI never mints a
+  credential. MCP never reaches the core scope, and the core RPC
+  allowlist leaves these out.
+- Sessions, logins and OAuth still use the kernel's owner pool. They are
+  the next candidates for the same move.
+- `/dav/` answers OPTIONS and a PROPFIND for the principal, through
+  defusedxml with no DTD, Depth 0 or 1, and a 64 KiB body limit. Address
+  books and calendars come with issues #2 and #3, which also mint
+  PostgREST tokens with `via = "dav:<id>"`.
+
 ## History and trash
 
 Every change to a person's data keeps the state before it. A delete goes
