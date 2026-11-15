@@ -126,6 +126,7 @@ testers.runNixOSTest {
     with subtest("the shell is served to a session"):
         assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/")
         assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/p/todos/heycarl-todos")
+        assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/p/counters/heycarl-counters")
 
     with subtest("the CSP allows the shell's own inline script and no other"):
         import base64, hashlib, re
@@ -144,7 +145,7 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(curl(f"{as_alice} http://hey/api/plugins"))
-        assert sorted(p["name"] for p in plugins) == ["crm", "reminders", "todos"], plugins
+        assert sorted(p["name"] for p in plugins) == ["counters", "crm", "reminders", "todos"], plugins
         for p in plugins:
             curl(f"-f {as_alice} 'http://hey{p['frontend']['module']}' -o /dev/null")
 
@@ -156,6 +157,27 @@ testers.runNixOSTest {
         todos = json.loads(curl(f"{as_alice} http://hey/api/data/todos/todo"))
         assert [t["title"] for t in todos] == ["from the vm"], todos
         assert json.loads(curl(f"{as_bob} http://hey/api/data/todos/todo")) == []
+
+    with subtest("counters are private, and nobody counts on another's counter"):
+        post = "-H 'content-type: application/json' -H 'prefer: return=representation'"
+        counters = "http://hey/api/data/counters"
+        [cups] = json.loads(curl(
+            f"-f {as_alice} {post} -d '{{\"name\": \"cups\", \"step\": 2}}' {counters}/counter"
+        ))
+        cid = cups["id"]
+        bumped = json.loads(curl(f"-f {as_alice} {post} -d '{{\"counter_id\": {cid}}}' {counters}/rpc/bump"))
+        assert bumped["value"] == 2, bumped
+        assert status(f"{counters}/counter_value") == "401"
+        assert json.loads(curl(f"{as_bob} {counters}/counter_value")) == []
+        assert json.loads(curl(f"{as_bob} {counters}/event")) == []
+        # The composite foreign key: Bob's event can only name Bob's counter.
+        assert status(f"{as_bob} {post} -d '{{\"counter_id\": {cid}, \"delta\": 5}}' {counters}/event") == "409"
+        for fn, extra in [("bump", ""), ("set_value", ", \"target\": 9"), ("reset_value", ""), ("undo_last", "")]:
+            assert status(f"{as_bob} {post} -d '{{\"counter_id\": {cid}{extra}}}' {counters}/rpc/{fn}") == "404", fn
+        assert status(f"{as_bob} '{counters}/rpc/daily_totals?counter_id={cid}'") == "404"
+        assert status(f"{as_bob} -X DELETE '{counters}/counter?id=eq.{cid}'") == "204"
+        [mine] = json.loads(curl(f"{as_alice} '{counters}/counter_value?id=eq.{cid}'"))
+        assert (mine["value"], mine["events"]) == (2, 1), mine
 
     with subtest("a write from another origin is refused"):
         cookie_only = as_alice.split(" -H 'origin")[0]
