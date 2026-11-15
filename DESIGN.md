@@ -45,8 +45,8 @@ token.
   without it.
 - No request header names a person. The kernel never reads
   `X-Forwarded-User`.
-- The kernel sets HSTS, `frame-ancestors 'none'`, nosniff and
-  `Referrer-Policy: same-origin` on every response.
+- The kernel sets HSTS, a content security policy, a Permissions-Policy,
+  nosniff and `Referrer-Policy: same-origin` on every response.
 
 ## PostgREST tokens
 
@@ -217,17 +217,26 @@ Accepted for now, by the owner:
   address (croshome `gate.nix`); there is no second factor.
 - No backups and no disk encryption.
 
+Closed:
+
+- A grant ends 90 days after consent, however often it refreshes. A
+  rotated refresh token that comes back ends its grant.
+- `allowedEmails` holds at every request, not only at sign-in: a session
+  or grant whose address left the list stops working. Only a verified
+  address counts.
+- The CSP allows scripts from this site only, plus the shell's inline
+  bootstrap by its hash, which the kernel reads from `index.html`.
+- At most 50 clients without a grant exist at a time.
+- The units run with an empty capability set, a system call filter and
+  the usual `Protect*` options. PostgREST is its own OS user, the only
+  one that logs in as `heycarl_authenticator`, and only the kernel
+  reaches its socket.
+
 Open:
 
 - A client can approve its own elicitation, so confirmation guards
   against model mistakes, not a hostile client. A trash the person
   empties in the app would.
-- Grants renew forever, and a reused refresh token does not end its
-  grant (OAuth 2.1 recommends both).
-- Sessions keep working after an address leaves `allowedEmails`.
-- The CSP covers framing only; no `script-src`.
-- systemd sandboxing is basic, and PostgREST runs as the kernel's user.
-- `/register` takes unlimited unauthenticated registrations.
 
 ## Open questions
 
