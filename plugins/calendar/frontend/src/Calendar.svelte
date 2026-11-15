@@ -250,7 +250,12 @@
 			<ul class="events">
 				{#each list as e (e.id)}
 					<li>
-						<a href="#/event/{e.id}" class:open={open === e.id}>
+						<a
+							class="row"
+							href={open === e.id ? '#/' : `#/event/${e.id}`}
+							class:open={open === e.id}
+							aria-expanded={open === e.id}
+						>
 							<span class="dot" style:background={e.color || 'gray'}></span>
 							<span class="when">{e.all_day ? 'All day' : time(e.starts_at)}</span>
 							<span class="title">{e.title || '(no title)'}</span>
@@ -347,9 +352,9 @@
 		margin: 1rem 0 0.25rem;
 		font-size: 1rem;
 	}
-	.events a {
+	.events a.row {
 		display: grid;
-		grid-template-columns: 0.75rem 4.5rem 1fr;
+		grid-template-columns: 0.75rem 5.5rem 1fr;
 		gap: 0.5rem;
 		align-items: center;
 		min-height: 3rem;
@@ -357,7 +362,7 @@
 		text-decoration: none;
 		border-bottom: 1px solid color-mix(in srgb, var(--hc-muted, gray) 30%, transparent);
 	}
-	.events a.open {
+	.events a.row.open {
 		font-weight: bold;
 	}
 	.dot {
@@ -365,6 +370,9 @@
 		width: 0.75rem;
 		height: 0.75rem;
 		border-radius: 50%;
+	}
+	.when {
+		white-space: nowrap;
 	}
 	.when,
 	.muted {
