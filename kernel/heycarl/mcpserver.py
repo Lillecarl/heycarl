@@ -65,8 +65,9 @@ READ_METHODS: Final = frozenset({"GET", "HEAD"})
 WRITE_VERBS: Final = {"POST": "Write to", "PATCH": "Change", "DELETE": "Delete from"}
 CONFIRM_BODY_CHARS: Final = 500
 # The core functions MCP may call. Purge is not one: only the app may.
-CORE_READ_RPC: Final = frozenset({"history", "trash"})
-CORE_WRITE_RPC: Final = frozenset({"restore", "undo"})
+WRITE: Final = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+CORE_READ_RPC: Final = frozenset({"history", "trash", "links", "entries"})
+CORE_WRITE_RPC: Final = frozenset({"restore", "undo", "link", "unlink"})
 # Any: JSON values, whatever the table holds. A tool returns it inside an
 # object: FastMCP sends each item of a bare list as its own text block, and
 # a client that reads the text gets one object, or nothing for no rows.
@@ -496,6 +497,66 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
         """
         result: dict[str, Json] = await core_rpc(ctx, "undo", {"version": version})
         return result
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def entries_search(
+        ctx: Context, query: str, max_rows: int = 20
+    ) -> dict[str, Json]:
+        """Find entries of any kind by their label: people, todos, reminders,
+        notes, gifts. Each comes with the scope, table and key that link and
+        links_list take."""
+        rows = await core_rpc(ctx, "entries", {"q": query, "max_rows": max_rows})
+        return {"entries": [r["entry"] for r in rows]}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def links_list(
+        ctx: Context, scope: str, table: str, key: dict[str, Json]
+    ) -> dict[str, Json]:
+        """The entries linked to one entry, for example scope "todos", table
+        "todo", key {"id": 3}. How two people are related is in people_get
+        instead."""
+        return {
+            "links": await core_rpc(
+                ctx, "links", {"of_scope": scope, "of_table": table, "of_key": key}
+            )
+        }
+
+    @server.tool(annotations=WRITE)
+    async def link(
+        ctx: Context,
+        scope: str,
+        table: str,
+        key: dict[str, Json],
+        other_scope: str,
+        other_table: str,
+        other_key: dict[str, Json],
+        label: str = "",
+    ) -> dict[str, Json]:
+        """Link two entries of any kind, such as a todo to the person it is
+        for. Links have no direction; `label` says how they relate ("for the
+        trip"). Linking a linked pair again changes its label. For how two
+        people are related (parent, friend), use people_relate."""
+        result: dict[str, Json] = await core_rpc(
+            ctx,
+            "link",
+            {
+                "a_scope": scope,
+                "a_table": table,
+                "a_key": key,
+                "b_scope": other_scope,
+                "b_table": other_table,
+                "b_key": other_key,
+                "label": label,
+            },
+        )
+        return result
+
+    @server.tool(annotations=WRITE)
+    async def unlink(ctx: Context, link_id: int) -> str:
+        """Remove a link by the id links_list shows. The history keeps it,
+        so `undo` brings it back."""
+        await core_rpc(ctx, "unlink", {"id": link_id})
+        return "unlinked"
 
     return server
 

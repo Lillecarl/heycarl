@@ -40,7 +40,19 @@ create function heycarl_history.label(data jsonb) returns text
     select left(coalesce(
       nullif(trim(concat_ws(' ', data ->> 'first_name', data ->> 'last_name')), ''),
       data ->> 'title', data ->> 'name', data ->> 'body', data ->> 'value',
-      nullif(data ->> 'label', ''), ''), 120)
+      nullif(data ->> 'label', ''),
+      case when data ? 'month' and data ? 'day'
+        then concat_ws(' ', data ->> 'kind', (data ->> 'day') || '/' || (data ->> 'month'))
+      end, ''), 120)
+  $$;
+
+-- A plugin's name, or core for the kernel's own tables (links).
+create function heycarl_history.scope_name(nspname name) returns text
+  language sql immutable
+  as $$
+    select case when nspname like 'heycarl\_plugin\_%'
+                then substr(nspname, length('heycarl_plugin_') + 1)
+                else 'core' end
   $$;
 
 create function heycarl_history.describe(v heycarl_private.version) returns jsonb
@@ -49,7 +61,7 @@ create function heycarl_history.describe(v heycarl_private.version) returns json
   as $$
     select jsonb_build_object(
       'version', v.id,
-      'scope', regexp_replace(n.nspname, '^heycarl_plugin_', ''),
+      'scope', heycarl_history.scope_name(n.nspname),
       'table', c.relname,
       'key', v.key,
       'label', heycarl_history.label(v.data))
@@ -247,13 +259,30 @@ create function heycarl_history.purge(me text, of_tx xid8, of_at timestamptz) re
   as $$
 declare
   n integer;
+  doomed jsonb;
+  gone bigint[];
 begin
-  with doomed as materialized (
-    select d.rel, d.key from heycarl_history.deleted(me) d
-     where of_tx is null or (d.tx = of_tx and d.at = of_at))
-  delete from heycarl_private.version v using doomed
-   where v.rel = doomed.rel and v.key = doomed.key and v.owner_sub = me;
+  select coalesce(jsonb_agg(jsonb_build_object('rel', d.rel::oid, 'key', d.key)), '[]')
+    into doomed
+    from heycarl_history.deleted(me) d
+   where of_tx is null or (d.tx = of_tx and d.at = of_at);
+  -- Links to a purged entry go too, and then their history: a statement of
+  -- its own, so the delete's versions exist before they are removed.
+  with dropped as (
+    delete from heycarl_private.link l
+     using jsonb_array_elements(doomed) x
+     where l.owner_sub = me
+       and ((l.a_rel = (x ->> 'rel')::oid::regclass and l.a_key = x -> 'key')
+         or (l.b_rel = (x ->> 'rel')::oid::regclass and l.b_key = x -> 'key'))
+    returning l.id)
+  select coalesce(array_agg(id), '{}') into gone from dropped;
+  delete from heycarl_private.version v
+   using jsonb_array_elements(doomed) x
+   where v.owner_sub = me and v.rel = (x ->> 'rel')::oid::regclass and v.key = x -> 'key';
   get diagnostics n = row_count;
+  delete from heycarl_private.version v
+   where v.owner_sub = me and v.rel = 'heycarl_private.link'::regclass
+     and (v.key ->> 'id')::bigint = any (gone);
   return n;
 end
 $$;
@@ -275,7 +304,7 @@ create function heycarl.history(
   language sql stable security definer
   set search_path = pg_catalog, pg_temp
   as $$
-    select v.id, regexp_replace(n.nspname, '^heycarl_plugin_', ''), c.relname, v.key,
+    select v.id, heycarl_history.scope_name(n.nspname), c.relname, v.key,
            v.op, v.data, v.at, v.via, heycarl_history.label(v.data),
            not exists (select from heycarl_private.version w
                         where w.rel = v.rel and w.key = v.key and w.id > v.id)
@@ -283,7 +312,7 @@ create function heycarl.history(
       join pg_class c on c.oid = v.rel
       join pg_namespace n on n.oid = c.relnamespace
      where v.owner_sub = heycarl_history.caller()
-       and (of_scope is null or n.nspname = 'heycarl_plugin_' || of_scope)
+       and (of_scope is null or heycarl_history.scope_name(n.nspname) = of_scope)
        and (of_table is null or c.relname = of_table)
        and (of_key is null or v.key = of_key)
        and (before is null or v.id < before)
