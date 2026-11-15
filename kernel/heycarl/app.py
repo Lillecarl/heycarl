@@ -325,6 +325,8 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     async def push_subscribe(
         body: SubscribeRequest, request: Request, kernel: KernelDep, who: CallerDep
     ) -> None:
+        if not push.is_push_service(body.endpoint, kernel.pusher.hosts):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "not a push service")
         headers = postgrest.request_headers(
             {"content-type": "application/json"},
             kernel.minter.user(who.sub),

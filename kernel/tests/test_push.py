@@ -16,6 +16,7 @@ import trustme
 from aiohttp import web
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from heycarl import push
 
 from .conftest import as_user, needs_database
 
@@ -52,6 +53,7 @@ async def push_service(kernel: Kernel) -> AsyncIterator[PushService]:
     client_tls = ssl.create_default_context()
     ca.configure_trust(client_tls)
     kernel.pusher.tls = client_tls
+    kernel.pusher.hosts = frozenset({"127.0.0.1"})
 
     runner = web.AppRunner(web.Application())
     service = PushService(base="")
@@ -90,6 +92,33 @@ async def subscribe(client: httpx.AsyncClient, user: str, endpoint: str) -> None
         headers=as_user(user),
     )
     assert r.status_code == 204, r.text
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "allowed"),
+    [
+        ("https://fcm.googleapis.com/fcm/send/abc", True),
+        ("https://updates.push.services.mozilla.com/wpush/v2/abc", True),
+        ("https://web.push.apple.com/abc", True),
+        ("https://wns2-db5p.notify.windows.com/w/?token=abc", True),
+        ("http://fcm.googleapis.com/fcm/send/abc", False),
+        ("https://fcm.googleapis.com.evil.example/x", False),
+        ("https://evilfcm.googleapis.com.example/x", False),
+        ("https://fcm.googleapis.com@evil.example/x", False),
+        ("https://169.254.169.254/latest/meta-data", False),
+    ],
+)
+def test_only_browser_push_services_are_endpoints(endpoint: str, allowed: bool) -> None:
+    assert push.is_push_service(endpoint, push.PUSH_SERVICE_HOSTS) is allowed
+
+
+async def test_a_subscription_elsewhere_is_refused(client: httpx.AsyncClient) -> None:
+    r = await client.post(
+        "/api/push/subscribe",
+        json={"endpoint": "https://evil.example/collect", "keys": browser_keys()},
+        headers=as_user("push-evil"),
+    )
+    assert r.status_code == 400
 
 
 async def test_key_is_a_p256_point(client: httpx.AsyncClient) -> None:

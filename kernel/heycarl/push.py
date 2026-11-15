@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlsplit
 
 import aiohttp
 import structlog
@@ -28,6 +29,28 @@ log = structlog.get_logger()
 TTL_SECONDS: Final = 6 * 3600
 # The push service answers these for a subscription that will never work again.
 GONE: Final = frozenset({404, 410})
+# The browsers' push services: Chrome and Android, Firefox, Safari, Edge.
+# A subscription elsewhere would make the kernel POST, with each reminder's
+# text, to whatever URL the row names.
+PUSH_SERVICE_HOSTS: Final = frozenset(
+    {
+        "fcm.googleapis.com",
+        "push.services.mozilla.com",
+        "web.push.apple.com",
+        "notify.windows.com",
+    }
+)
+
+
+def is_push_service(endpoint: str, hosts: frozenset[str]) -> bool:
+    """`endpoint` is https on one of `hosts` or a subdomain of one."""
+    parts = urlsplit(endpoint)
+    host = parts.hostname or ""
+    return (
+        parts.scheme == "https"
+        and parts.username is None
+        and any(host == h or host.endswith("." + h) for h in hosts)
+    )
 
 
 class Payload(BaseModel):
@@ -77,6 +100,8 @@ class Pusher:
     # TLS for the push services. Tests swap in a context that trusts their
     # own endpoint's certificate.
     tls: ssl.SSLContext | bool = True
+    # Tests add their own endpoint's host.
+    hosts: frozenset[str] = PUSH_SERVICE_HOSTS
 
     async def _subscriptions(self, owner: str) -> list[Subscription]:
         r = await self.data.get(
@@ -111,6 +136,9 @@ class Pusher:
         connector = aiohttp.TCPConnector(ssl=self.tls)
         async with aiohttp.ClientSession(connector=connector) as session:
             for sub in await self._subscriptions(owner):
+                if not is_push_service(sub.endpoint, self.hosts):
+                    log.warning("push_refused_endpoint", subscription=sub.id)
+                    continue
                 if await self._send_one(session, sub, body):
                     delivered += 1
         return delivered
