@@ -71,9 +71,13 @@ class Kind(StrEnum):
 
 
 def allowed_redirect(uri: str) -> bool:
-    """HTTPS anywhere, or plain HTTP to this machine (RFC 8252 native apps)."""
+    """HTTPS anywhere, or plain HTTP to this machine (RFC 8252 native apps).
+
+    Never with user info: https://claude.ai@evil.example goes to evil.example
+    but reads as claude.ai.
+    """
     parts = urlsplit(uri)
-    if parts.fragment:
+    if parts.fragment or "@" in parts.netloc:
         return False
     if parts.scheme == "https":
         return bool(parts.hostname)

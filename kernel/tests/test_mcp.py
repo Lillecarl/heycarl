@@ -13,7 +13,8 @@ import json
 import secrets
 import socket
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
@@ -26,6 +27,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from mcp.shared.exceptions import McpError
 from pydantic import AnyUrl
+from sse_starlette.sse import AppStatus
 
 from .conftest import PUBLIC_URL, as_user, needs_database
 
@@ -63,6 +65,12 @@ async def served(app: FastAPI, postgrest: None, tmp_path: Path) -> AsyncIterator
     path = tmp_path / "kernel.sock"
     sock = socket.socket(socket.AF_UNIX)
     sock.bind(str(path))
+    # sse-starlette keeps one shutdown flag for the whole process, and a
+    # watcher copies a stopped uvicorn's should_exit into it. Each test stops
+    # its own server, so after the first stop every later event stream ended
+    # before its first answer: initialize hung. Production has one server.
+    AppStatus.disable_automatic_graceful_drain()
+    AppStatus.should_exit = False
     # The app fixture already ran the lifespan.
     server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="warning"))
     async with anyio.create_task_group() as tg:
@@ -150,7 +158,9 @@ async def consent_page(
         "/oauth/consent", params={"request": request_id}, headers=browser
     )
     assert page.status_code == 200, page.text
-    assert "http://localhost:3030" in page.text
+    assert '<p class="host">localhost</p>' in page.text
+    # Write is offered, and off until the person ticks it.
+    assert 'value="write">' in page.text
     return request_id
 
 
@@ -208,6 +218,21 @@ async def connected(
     browser = as_user(sub)
     answer: dict[str, list[str]] = {}
 
+    # A hang anywhere in the session, sign-in and teardown included, fails
+    # with a traceback at the await that never returned.
+    with anyio.fail_after(SESSION_TIMEOUT):
+        async with connected_inner(served, browser, answer, scopes, elicitation) as s:
+            yield s
+
+
+@asynccontextmanager
+async def connected_inner(
+    served: Plain,
+    browser: dict[str, str],
+    answer: dict[str, list[str]],
+    scopes: tuple[str, ...],
+    elicitation: ElicitationFnT | None,
+) -> AsyncIterator[ClientSession]:
     async with httpx.AsyncClient(transport=served, base_url=PUBLIC_URL) as site:
 
         async def redirect_handler(url: str) -> None:
@@ -245,6 +270,12 @@ async def connected(
             yield session
 
 
+# A call with no answer fails here, naming itself, before the suite's
+# faulthandler_timeout ends the run without saying which call hung.
+CALL_TIMEOUT: Final = timedelta(seconds=20)
+SESSION_TIMEOUT: Final = 45
+
+
 # Any: a tool's structured result, JSON.
 async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
     """The result, unwrapped from a one-key object such as {"people": [...]}.
@@ -252,7 +283,7 @@ async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
     Also checks what a client that reads only the text sees, as claude.ai
     does: one block, the same JSON. A bare list breaks this, one block per item.
     """
-    result = await session.call_tool(name, arguments)
+    result = await session.call_tool(name, arguments, read_timeout_seconds=CALL_TIMEOUT)
     assert not result.isError, result.content
     assert result.structuredContent is not None, result
     content = result.structuredContent
@@ -266,7 +297,7 @@ async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
 
 
 async def failure(session: ClientSession, name: str, **arguments: object) -> str:
-    result = await session.call_tool(name, arguments)
+    result = await session.call_tool(name, arguments, read_timeout_seconds=CALL_TIMEOUT)
     assert result.isError, result
     return " ".join(getattr(c, "text", "") for c in result.content)
 
@@ -345,19 +376,22 @@ async def test_a_read_only_connection_cannot_write(served: Plain) -> None:
         )
 
 
+def answering(confirm: bool, asked: list[str]) -> ElicitationFnT:
+    """A client that asks its person, who answers `confirm` every time."""
+
+    async def answer(
+        context: object, params: types.ElicitRequestParams
+    ) -> types.ElicitResult:
+        asked.append(params.message)
+        return types.ElicitResult(action="accept", content={"confirm": confirm})
+
+    return answer
+
+
 async def test_delete_asks_and_a_client_that_cannot_ask_cannot_delete(
     served: Plain,
 ) -> None:
     asked: list[str] = []
-
-    def answering(confirm: bool) -> ElicitationFnT:
-        async def answer(
-            context: object, params: types.ElicitRequestParams
-        ) -> types.ElicitResult:
-            asked.append(params.message)
-            return types.ElicitResult(action="accept", content={"confirm": confirm})
-
-        return answer
 
     async with connected(served, sub="gina-sub") as session:
         todo = await tool(session, "todos_add", title="Renew passport")
@@ -373,14 +407,14 @@ async def test_delete_asks_and_a_client_that_cannot_ask_cannot_delete(
             query={"id": f"eq.{todo['id']}"},
         )
     async with connected(
-        served, sub="gina-sub", elicitation=answering(False)
+        served, sub="gina-sub", elicitation=answering(False, asked)
     ) as session:
         assert "not confirmed" in await failure(
             session, "todos_delete", todo_id=todo["id"]
         )
         assert len(await tool(session, "todos_list")) == 1
     async with connected(
-        served, sub="gina-sub", elicitation=answering(True)
+        served, sub="gina-sub", elicitation=answering(True, asked)
     ) as session:
         assert await tool(session, "todos_delete", todo_id=todo["id"]) == "deleted"
         assert await tool(session, "todos_list") == []
@@ -388,9 +422,34 @@ async def test_delete_asks_and_a_client_that_cannot_ask_cannot_delete(
 
 
 async def test_generic_data_tools(served: Plain) -> None:
+    asked: list[str] = []
     async with connected(served, sub="hank-sub") as session:
+        # A client that cannot ask cannot write through the generic tool.
+        assert "cannot ask" in await failure(
+            session,
+            "data_write",
+            scope="todos",
+            method="POST",
+            path="todo",
+            body={"title": "x"},
+        )
+    async with connected(
+        served, sub="hank-sub", elicitation=answering(True, asked)
+    ) as session:
         scopes = await tool(session, "data_scopes")
-        assert {"core", "crm", "todos", "reminders"} <= set(scopes)
+        assert set(scopes) == {"crm", "todos", "reminders"}
+        # The core scope holds push subscriptions; MCP never reaches it.
+        assert "no data scope" in await failure(
+            session, "data_read", scope="core", path="push_subscription"
+        )
+        assert "no data scope" in await failure(
+            session,
+            "data_write",
+            scope="core",
+            method="POST",
+            path="push_subscription",
+            body={"endpoint": "https://evil.example/", "p256dh": "x", "auth": "y"},
+        )
         schema = await tool(session, "data_schema", scope="crm")
         assert "first_name" in schema["tables"]["contact"]
         assert "search" in schema["functions"]
@@ -410,6 +469,7 @@ async def test_generic_data_tools(served: Plain) -> None:
             query={"select": "id,title"},
         )
         assert rows == [{"id": row["id"], "title": "via data"}]
+        assert asked == ['Write to todos/todo with {"title": "via data"}?']
         assert "PATCH needs a filter" in await failure(
             session,
             "data_write",
@@ -471,7 +531,14 @@ async def test_authorize_needs_a_session(site: httpx.AsyncClient) -> None:
 
 @pytest.mark.parametrize(
     "uri",
-    ["http://evil.example/cb", "javascript:alert(1)", "https://ok.example/cb#frag"],
+    [
+        "http://evil.example/cb",
+        "javascript:alert(1)",
+        "https://ok.example/cb#frag",
+        # Reads as claude.ai; goes to evil.example.
+        "https://claude.ai@evil.example/cb",
+        "http://user@localhost:3030/cb",
+    ],
 )
 async def test_registration_refuses_a_dangerous_redirect(
     site: httpx.AsyncClient, uri: str
@@ -721,4 +788,4 @@ async def test_prompts_embed_records_and_complete_names(served: Plain) -> None:
             ),
             {"name": "scope", "value": "c"},
         )
-        assert sorted(scopes.completion.values) == ["core", "crm"]
+        assert scopes.completion.values == ["crm"]

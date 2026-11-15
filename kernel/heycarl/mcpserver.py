@@ -60,6 +60,8 @@ INSTRUCTIONS: Final = (
     " and todos. Every tool acts as the person who approved this connection."
 )
 READ_METHODS: Final = frozenset({"GET", "HEAD"})
+WRITE_VERBS: Final = {"POST": "Write to", "PATCH": "Change", "DELETE": "Delete from"}
+CONFIRM_BODY_CHARS: Final = 500
 # Any: JSON values, whatever the table holds. A tool returns it inside an
 # object: FastMCP sends each item of a bare list as its own text block, and
 # a client that reads the text gets one object, or nothing for no rows.
@@ -117,13 +119,15 @@ async def call(
 ) -> Any:
     """PostgREST as the person who approved this connection, so RLS applies.
 
-    GET and HEAD need `read`; anything else needs `write`. `scope` is
-    "core" or a plugin's name.
+    GET and HEAD need `read`; anything else needs `write`. `scope` is a
+    plugin's name. The core scope is never reachable: it holds the push
+    subscriptions, and a client that added its own would get every
+    reminder, invisibly, even after its grant ends.
     """
     method = method.upper()
     sub = require(ctx, Scope.READ if method in READ_METHODS else Scope.WRITE)
     kernel = kernel_of(ctx)
-    schema = kernel.schema_for(scope)
+    schema = kernel.schema_for(scope) if scope in scopes_of(kernel) else None
     if schema is None:
         raise ToolError(f"no data scope {scope!r}; see the data_scopes tool")
     response = await kernel.data.request(
@@ -250,8 +254,8 @@ def embed(uri: str, data: object) -> UserMessage:
 
 
 def scopes_of(kernel: Kernel) -> dict[str, str]:
+    """The scopes MCP may reach: the plugins', never the core's."""
     return {
-        "core": "Hey Carl itself: push subscriptions",
         **{p.name: p.manifest.title for p in kernel.plugins},
     }
 
@@ -376,13 +380,27 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
         """Write through PostgREST: POST (insert or call rpc), PATCH or DELETE.
 
         PATCH and DELETE need a filter in `query`, such as {"id": "eq.7"}.
-        A DELETE asks the person to confirm first. Returns the rows written.
+        Every call asks the person to confirm first, so prefer the
+        plugins' own tools. Returns the rows written.
         """
+        require(ctx, Scope.WRITE)
+        if scope not in scopes_of(kernel_of(ctx)):
+            raise ToolError(f"no data scope {scope!r}; see the data_scopes tool")
         if method in {"PATCH", "DELETE"} and not query:
             raise ToolError(f"{method} needs a filter in query")
-        if method == "DELETE":
-            filters = ", ".join(f"{k}={v}" for k, v in (query or {}).items())
-            await confirm(ctx, f"Delete from {scope}/{path} where {filters}?")
+        # A PATCH over many rows destroys as much as a DELETE, so every
+        # generic write asks; the curated tools ask only before deleting.
+        filters = ", ".join(f"{k}={v}" for k, v in (query or {}).items())
+        shown = json.dumps(body, ensure_ascii=False)
+        if len(shown) > CONFIRM_BODY_CHARS:
+            shown = shown[:CONFIRM_BODY_CHARS] + "…"
+        await confirm(
+            ctx,
+            f"{WRITE_VERBS[method]} {scope}/{path}"
+            + (f" where {filters}" if filters else "")
+            + (f" with {shown}" if body is not None else "")
+            + "?",
+        )
         return {"result": await call(ctx, scope, method, path, params=query, body=body)}
 
     return server
@@ -421,27 +439,28 @@ def consent_html(
     redirect = urlsplit(str(params.redirect_uri))
     offered = params.scopes or SCOPES
     # Anyone may register a client under any name, so the page leads with
-    # the redirect host, which the client cannot fake.
+    # the redirect host, which the client cannot fake. Write starts off: a
+    # careless click grants reading only.
     name = escape(client.client_name or "An unnamed app")
     boxes = "".join(
-        f"<label><input type=checkbox name=scope value={escape(s)} checked"
-        f"{' disabled' if s == Scope.READ else ''}> {escape(SCOPE_TEXT[Scope(s)])}"
-        "</label>"
+        f'<label><input type="checkbox" name="scope" value="{escape(s)}"'
+        f"{' checked disabled' if s == Scope.READ else ''}>"
+        f" {escape(SCOPE_TEXT[Scope(s)])}</label>"
         for s in SCOPES
         if s in offered
     )
     return (
         "<h1>Connect an app</h1>"
         f"<p>An app that calls itself <strong>{name}</strong> asks to use Hey Carl"
-        " as you. Approve it only if you started this, and only if you know"
-        " this address:</p>"
-        f"<p class=host>{escape(redirect.scheme)}://{escape(redirect.netloc)}</p>"
-        f"<form method=post action={CONSENT_PATH}>"
-        f"<input type=hidden name=request value={escape(request_id, quote=True)}>"
-        f"<input type=hidden name=scope value={Scope.READ}>"
+        " as you. Approve it only if you started this, and only if you"
+        " recognise this site, where your answer goes:</p>"
+        f'<p class="host">{escape(redirect.hostname or "")}</p>'
+        f'<form method="post" action="{CONSENT_PATH}">'
+        f'<input type="hidden" name="request" value="{escape(request_id)}">'
+        f'<input type="hidden" name="scope" value="{Scope.READ}">'
         f"{boxes}"
-        "<button name=decision value=approve>Approve</button>"
-        "<button name=decision value=deny>Deny</button>"
+        '<button name="decision" value="approve">Approve</button>'
+        '<button name="decision" value="deny">Deny</button>'
         "</form>"
     )
 
