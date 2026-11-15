@@ -361,6 +361,16 @@ Decided:
   `people_relate` and `people_unrelate` for it. A generic link between
   two people says only that they are linked, with a label.
 
+Found after the build, accepted:
+
+- `entries` takes up to `max_rows` from each table, not in all; the panel
+  shows the first ten.
+- A link removed before its entry was purged stays in the trash, and
+  restoring it brings back a link nobody sees. Purge removes only the
+  links that were live.
+- Join rows and preferences have no label, so the search leaves them
+  out; the API still links them.
+
 ## Security
 
 The data is personal: people, notes about them, dates. A review in
