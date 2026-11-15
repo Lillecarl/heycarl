@@ -1,5 +1,7 @@
 { testers }:
-
+let
+  fakeGoogle = "http://127.0.0.1:8099";
+in
 testers.runNixOSTest {
   name = "heycarl";
 
@@ -18,6 +20,27 @@ testers.runNixOSTest {
           "alice@example.com"
           "bob@example.com"
         ];
+        google = {
+          clientId = "hey.apps.example.com";
+          clientSecretFile = pkgs.writeText "google-client-secret" "google-test-secret";
+          tokenKeyFile = pkgs.writeText "google-token-key" "a test key, at least thirty-two bytes long";
+          testEndpoints = {
+            authorize = "${fakeGoogle}/o/oauth2/v2/auth";
+            token = "${fakeGoogle}/token";
+            revoke = "${fakeGoogle}/revoke";
+            calendar = "${fakeGoogle}/calendar/v3";
+          };
+        };
+      };
+
+      # Google, faked: the kernel's tests use the same file.
+      systemd.services.fake-google = {
+        wantedBy = [ "multi-user.target" ];
+        before = [ "heycarl.service" ];
+        serviceConfig = {
+          ExecStart = "${pkgs.python3.interpreter} ${../kernel/tests/fake_google.py} 8099 hey.apps.example.com google-test-secret";
+          DynamicUser = true;
+        };
       };
 
       services.dex = {
@@ -145,7 +168,7 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(curl(f"{as_alice} http://hey/api/plugins"))
-        assert sorted(p["name"] for p in plugins) == ["counters", "crm", "reminders", "todos"], plugins
+        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "crm", "reminders", "todos"], plugins
         for p in plugins:
             curl(f"-f {as_alice} 'http://hey{p['frontend']['module']}' -o /dev/null")
 
@@ -178,6 +201,86 @@ testers.runNixOSTest {
         assert status(f"{as_bob} -X DELETE '{counters}/counter?id=eq.{cid}'") == "204"
         [mine] = json.loads(curl(f"{as_alice} '{counters}/counter_value?id=eq.{cid}'"))
         assert (mine["value"], mine["events"]) == (2, 1), mine
+
+    with subtest("Google Calendar through a fake Google"):
+        machine.wait_for_unit("fake-google.service")
+        machine.wait_for_open_port(8099)
+        plugin = "http://hey/api/plugins/calendar"
+        cal = "http://hey/api/data/calendar"
+        site = "https://hey.example.com"
+
+        def google(op, **args):
+            return json.loads(machine.succeed(
+                "curl -sf -H 'content-type: application/json' "
+                f"-d '{json.dumps({'op': op, 'args': args})}' http://127.0.0.1:8099/_control"
+            ))
+
+        def consent(who):
+            url = json.loads(curl(f"-f {who} -X POST {plugin}/connect"))["url"]
+            assert "code_challenge_method=S256" in url and "calendar.readonly" in url, url
+            back = machine.succeed(f"curl -s -o /dev/null -w '%{{redirect_url}}' '{url}'")
+            assert back.startswith(f"{site}/api/plugins/calendar/callback?"), back
+            return "http://hey" + back.removeprefix(site)
+
+        def sync_now(who):
+            # The kernel allows one sync a person asks for each ten seconds.
+            return json.loads(machine.wait_until_succeeds(
+                f"runuser -u proxy -- curl -sf --unix-socket /run/heycarl/kernel.sock {who} -X POST {plugin}/sync"
+            ))
+
+        def agenda(who):
+            return {e["google_id"]: e["title"] for e in json.loads(curl(f"{who} {cal}/agenda"))}
+
+        info = json.loads(curl(f"{as_alice} {plugin}/status"))
+        assert info == {"configured": True, "redirect_uri": f"{site}/api/plugins/calendar/callback"}, info
+        assert status(f"{as_alice} '{plugin}/callback?state=forged&code=x'") == "400"
+        assert status(f"{as_bob} '{consent(as_alice)}'") == "403"
+        assert status(f"'{consent(as_alice)}'") == "401"
+        assert status(f"{as_alice} '{consent(as_alice)}'") == "303"
+        # The job, which the connect woke, syncs before anyone asks.
+        machine.wait_until_succeeds(
+            f"runuser -u proxy -- curl -sf --unix-socket /run/heycarl/kernel.sock {as_alice} "
+            f"'{cal}/account?last_sync_at=not.is.null' | grep -q google_account",
+            timeout=30,
+        )
+
+        first = sync_now(as_alice)
+        assert first["ok"] and first["events"] == 6, first
+        titles = agenda(as_alice)
+        assert titles["standup"] == "Standup" and "lunch" in titles, titles
+        for path in ["account", "calendar", "event", "agenda"]:
+            assert json.loads(curl(f"{as_bob} {cal}/{path}")) == [], path
+            assert status(f"{cal}/{path}") == "401", path
+        refuse = f"-H 'content-type: application/json' -d '{{\"owner\": \"alice\"}}' {cal}/rpc/refresh_token"
+        assert status(f"{as_bob} {refuse}") == "403"
+        assert status(f"{as_alice} {refuse}") == "403"
+
+        google("cancel", id="lunch")
+        google("rename", id="standup", title="Standup, later")
+        assert sync_now(as_alice)["ok"]
+        titles = agenda(as_alice)
+        assert "lunch" not in titles and titles["standup"] == "Standup, later", titles
+
+        google("gone")
+        google("expire_access")
+        grants = google("state")["refresh_grants"]
+        assert sync_now(as_alice)["ok"]
+        state = google("state")
+        assert state["refresh_grants"] == grants + 1, state
+        assert any("syncToken" in q for _, q in state["requests"])
+        assert len(agenda(as_alice)) == 5
+
+        [refresh] = state["refresh_tokens"]
+        sealed = machine.succeed(
+            "runuser -u postgres -- psql -d heycarl -tAc "
+            "\"select encode(sealed, 'escape') from heycarl_private.calendar_google_token\""
+        )
+        assert sealed.strip() and refresh not in sealed
+        bye = json.loads(curl(f"-f {as_alice} -X POST {plugin}/disconnect"))
+        assert bye == {"disconnected": True, "revoked": True}, bye
+        assert google("state")["revoked"] == [refresh]
+        assert json.loads(curl(f"{as_alice} {cal}/event")) == []
+        assert refresh not in machine.succeed("journalctl -u heycarl -u heycarl-postgrest -u postgresql")
 
     with subtest("a write from another origin is refused"):
         cookie_only = as_alice.split(" -H 'origin")[0]

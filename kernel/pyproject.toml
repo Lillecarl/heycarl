@@ -36,6 +36,7 @@ testpaths = ["tests"]
 # once the build ends, so a hang would otherwise show nothing at all.
 faulthandler_timeout = 60
 faulthandler_exit_on_timeout = true
+markers = ["unconfigured: the calendar plugin runs with no Google client"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "asyncio".msg = "Use anyio."

@@ -452,7 +452,7 @@ async def test_generic_data_tools(served: Plain) -> None:
         served, sub="hank-sub", elicitation=answering(True, asked)
     ) as session:
         scopes = await tool(session, "data_scopes")
-        assert set(scopes) == {"crm", "todos", "reminders", "counters"}
+        assert set(scopes) == {"crm", "todos", "reminders", "counters", "calendar"}
         # The core scope holds push subscriptions; MCP never reaches it.
         assert "no data scope" in await failure(
             session, "data_read", scope="core", path="push_subscription"
@@ -888,4 +888,4 @@ async def test_prompts_embed_records_and_complete_names(served: Plain) -> None:
             ),
             {"name": "scope", "value": "c"},
         )
-        assert sorted(scopes.completion.values) == ["counters", "crm"]
+        assert sorted(scopes.completion.values) == ["calendar", "counters", "crm"]

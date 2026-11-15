@@ -43,6 +43,19 @@ let
     HEYCARL_OIDC_CLIENT_SECRET_FILE = "/run/credentials/heycarl.service/oidc-client-secret";
     HEYCARL_ALLOWED_EMAILS = lib.concatStringsSep "," cfg.allowedEmails;
   };
+  googleOn = cfg.google.clientId != null;
+  credentials = "/run/credentials/heycarl.service";
+  # The kernel only, not migrate: only the running kernel reads them.
+  googleEnvironment = lib.optionalAttrs googleOn (
+    {
+      HEYCARL_GOOGLE_CLIENT_ID = cfg.google.clientId;
+      HEYCARL_GOOGLE_CLIENT_SECRET_FILE = "${credentials}/google-client-secret";
+      HEYCARL_GOOGLE_TOKEN_KEY_FILE = "${credentials}/google-token-key";
+    }
+    // lib.optionalAttrs (cfg.google.testEndpoints != { }) {
+      HEYCARL_GOOGLE_ENDPOINTS = builtins.toJSON cfg.google.testEndpoints;
+    }
+  );
   host = lib.head (lib.splitString "/" (lib.removePrefix "https://" cfg.publicUrl));
 
   sandbox = {
@@ -155,6 +168,49 @@ in
       '';
     };
 
+    google = {
+      clientId = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "1234-abc.apps.googleusercontent.com";
+        description = ''
+          A Google OAuth client ("Web application") for the calendar plugin,
+          which reads calendars with the calendar.readonly scope. Null turns
+          the feature off. Register the redirect URI
+          `<publicUrl>/api/plugins/calendar/callback` at the client.
+        '';
+      };
+      clientSecretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/agenix/heycarl-google-client-secret";
+        description = ''
+          The client's secret. Read through LoadCredential; give a path as a
+          string, so it never lands in the Nix store.
+        '';
+      };
+      tokenKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/agenix/heycarl-google-token-key";
+        description = ''
+          At least 32 random bytes, such as `openssl rand -base64 48`. The
+          kernel seals each refresh token with a key made from it, so a
+          database dump alone holds no usable token. Losing it means
+          everyone connects again. A path as a string, never in the store.
+        '';
+      };
+      testEndpoints = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        internal = true;
+        description = ''
+          Google's endpoints replaced, by name (authorize, token, revoke,
+          calendar), for the VM test's fake Google only.
+        '';
+      };
+    };
+
     caddy.enable = lib.mkEnableOption ''
       a Caddy virtual host for the publicUrl's host, proxying to the kernel
       socket. Caddy gets the certificate'';
@@ -178,6 +234,12 @@ in
       {
         assertion = lib.hasPrefix "https://" cfg.publicUrl || !cfg.caddy.enable;
         message = "services.heycarl.caddy needs an https publicUrl.";
+      }
+      {
+        assertion =
+          (cfg.google.clientId != null)
+          == (cfg.google.clientSecretFile != null && cfg.google.tokenKeyFile != null);
+        message = "services.heycarl.google needs clientId, clientSecretFile and tokenKeyFile together.";
       }
     ];
 
@@ -260,11 +322,17 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "heycarl-migrate.service" ];
       requires = [ "heycarl-migrate.service" ];
-      inherit environment;
+      environment = environment // googleEnvironment;
       serviceConfig = kernelSandbox // {
         ExecStartPre = "${pkgs.coreutils}/bin/rm -f ${kernelSocket}";
         ExecStart = "${lib.getExe cfg.package} serve --socket ${kernelSocket}";
-        LoadCredential = [ "oidc-client-secret:${cfg.oidc.clientSecretFile}" ];
+        LoadCredential = [
+          "oidc-client-secret:${cfg.oidc.clientSecretFile}"
+        ]
+        ++ lib.optionals googleOn [
+          "google-client-secret:${cfg.google.clientSecretFile}"
+          "google-token-key:${cfg.google.tokenKeyFile}"
+        ];
         # uvicorn creates the socket: 0660, so the proxy's group can open it.
         UMask = "0007";
         Restart = "on-failure";
