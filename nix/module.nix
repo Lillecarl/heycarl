@@ -3,8 +3,8 @@
 #
 # The kernel signs people in itself, over OIDC, and checks every request,
 # so the `heycarl` group on its socket grants a way to talk HTTP to it and
-# nothing more. PostgREST's socket and the token key are the heycarl
-# user's alone.
+# nothing more. PostgREST runs as its own user: only it logs in as
+# heycarl_authenticator, and only the kernel reaches its socket.
 {
   config,
   lib,
@@ -20,7 +20,10 @@ let
   stateDir = "/var/lib/heycarl";
   jwtSecret = "${stateDir}/jwt-secret";
   kernelSocket = "${runDir}/kernel.sock";
-  postgrestSocket = "${runDir}/postgrest.sock";
+  # PostgREST's own directory: the kernel reaches it through the group, and
+  # Caddy, in the heycarl group, does not.
+  postgrestDir = "heycarl-postgrest";
+  postgrestSocket = "/run/${postgrestDir}/postgrest.sock";
   pgSocket = "/run/postgresql";
   pluginsFile = pkgs.writeText "heycarl-plugins.json" (builtins.toJSON (map toString cfg.plugins));
   schemas = [ "heycarl" ] ++ map (p: "heycarl_plugin_${p.pluginName}") cfg.plugins;
@@ -42,17 +45,48 @@ let
   };
   host = lib.head (lib.splitString "/" (lib.removePrefix "https://" cfg.publicUrl));
 
-  hardening = {
-    User = "heycarl";
-    Group = "heycarl";
+  sandbox = {
     NoNewPrivileges = true;
     PrivateTmp = true;
+    PrivateDevices = true;
     ProtectSystem = "strict";
     ProtectHome = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectKernelLogs = true;
+    ProtectControlGroups = true;
+    ProtectClock = true;
+    ProtectHostname = true;
+    ProtectProc = "invisible";
+    ProcSubset = "pid";
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    LockPersonality = true;
+    RemoveIPC = true;
+    CapabilityBoundingSet = "";
+    AmbientCapabilities = "";
+    SystemCallArchitectures = "native";
+    SystemCallFilter = [
+      "@system-service"
+      "~@privileged"
+    ];
+    SystemCallErrorNumber = "EPERM";
+  };
+  kernelSandbox = sandbox // {
+    User = "heycarl";
+    Group = "heycarl";
     ReadWritePaths = [
       runDir
       # The kernel makes its VAPID key here on first start.
       stateDir
+    ];
+    # The provider, push services and DNS; netlink for getaddrinfo.
+    RestrictAddressFamilies = [
+      "AF_UNIX"
+      "AF_INET"
+      "AF_INET6"
+      "AF_NETLINK"
     ];
   };
 in
@@ -158,8 +192,16 @@ in
     users.users.heycarl = {
       isSystemUser = true;
       group = "heycarl";
+      extraGroups = [ "heycarl-postgrest" ];
     };
     users.groups.heycarl = { };
+    # The kernel runs Python with plugins in it; PostgREST holds the only
+    # login as heycarl_authenticator, which can become any user.
+    users.users.heycarl-postgrest = {
+      isSystemUser = true;
+      group = "heycarl-postgrest";
+    };
+    users.groups.heycarl-postgrest = { };
 
     systemd.tmpfiles.rules = [
       "d ${runDir} 0710 heycarl heycarl -"
@@ -168,11 +210,11 @@ in
 
     services.postgresql = {
       enable = true;
-      # Peer authentication as the heycarl OS user, for both logins: no
-      # password exists to leak.
+      # Peer authentication, one OS user per login: no password exists to
+      # leak.
       identMap = ''
         heycarl heycarl heycarl_owner
-        heycarl heycarl heycarl_authenticator
+        heycarl heycarl-postgrest heycarl_authenticator
       '';
       # Before the host's own lines: pg_hba takes the first match.
       authentication = lib.mkBefore ''
@@ -212,7 +254,7 @@ in
       after = [ "heycarl-migrate.service" ];
       requires = [ "heycarl-migrate.service" ];
       inherit environment;
-      serviceConfig = hardening // {
+      serviceConfig = kernelSandbox // {
         ExecStartPre = "${pkgs.coreutils}/bin/rm -f ${kernelSocket}";
         ExecStart = "${lib.getExe cfg.package} serve --socket ${kernelSocket}";
         LoadCredential = [ "oidc-client-secret:${cfg.oidc.clientSecretFile}" ];
@@ -231,7 +273,7 @@ in
       after = [ "heycarl-setup.service" ];
       requires = [ "heycarl-setup.service" ];
       inherit environment;
-      serviceConfig = hardening // {
+      serviceConfig = kernelSandbox // {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = "${lib.getExe cfg.package} migrate";
@@ -246,14 +288,19 @@ in
       environment = {
         PGRST_DB_URI = "postgresql:///${cfg.database}?host=${pgSocket}&user=heycarl_authenticator";
         PGRST_DB_SCHEMAS = lib.concatStringsSep "," schemas;
-        PGRST_JWT_SECRET = "@${jwtSecret}";
+        PGRST_JWT_SECRET = "@/run/credentials/heycarl-postgrest.service/jwt-secret";
         PGRST_SERVER_UNIX_SOCKET = postgrestSocket;
-        PGRST_SERVER_UNIX_SOCKET_MODE = "600";
+        PGRST_SERVER_UNIX_SOCKET_MODE = "660";
         PGRST_DB_CHANNEL_ENABLED = "true";
         PGRST_OPENAPI_MODE = "disabled";
       };
-      serviceConfig = hardening // {
-        ExecStartPre = "${pkgs.coreutils}/bin/rm -f ${postgrestSocket}";
+      serviceConfig = sandbox // {
+        User = "heycarl-postgrest";
+        Group = "heycarl-postgrest";
+        RuntimeDirectory = postgrestDir;
+        RuntimeDirectoryMode = "0750";
+        LoadCredential = [ "jwt-secret:${jwtSecret}" ];
+        RestrictAddressFamilies = [ "AF_UNIX" ];
         ExecStart = lib.getExe pkgs.postgrest;
         Restart = "on-failure";
         RestartSec = 2;

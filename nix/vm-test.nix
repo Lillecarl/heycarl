@@ -186,6 +186,24 @@ testers.runNixOSTest {
             "runuser -u outsider -- curl -sf --unix-socket /run/heycarl/kernel.sock http://hey/healthz"
         )
 
+    with subtest("only PostgREST logs in as the authenticator, and only the kernel reaches it"):
+        psql = "psql -h /run/postgresql -d heycarl -tAc 'select 1'"
+        machine.fail(f"runuser -u heycarl -- {psql} -U heycarl_authenticator")
+        machine.succeed(f"runuser -u heycarl-postgrest -- {psql} -U heycarl_authenticator")
+        machine.fail(f"runuser -u heycarl-postgrest -- {psql} -U heycarl_owner")
+        sock = "--unix-socket /run/heycarl-postgrest/postgrest.sock http://pg/"
+        machine.fail(f"runuser -u proxy -- curl -sf {sock}")
+        machine.succeed(f"runuser -u heycarl -- curl -s -o /dev/null {sock}")
+        machine.fail("runuser -u heycarl -- cat /run/credentials/heycarl-postgrest.service/jwt-secret")
+
+    with subtest("the units run sandboxed"):
+        for unit in ["heycarl", "heycarl-postgrest"]:
+            print(machine.succeed(f"systemd-analyze security --no-pager {unit}.service | tail -1"))
+            def prop(name):
+                return machine.succeed(f"systemctl show --value -p {name} {unit}").strip()
+            assert prop("CapabilityBoundingSet") == "", unit
+            assert prop("ProtectProc") == "invisible", unit
+
     with subtest("a restart keeps sessions and data"):
         # A switch restarts setup too; it must leave the kernel its files.
         machine.succeed("systemctl restart heycarl-setup.service")
