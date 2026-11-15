@@ -36,7 +36,7 @@ from .access import (
 )
 from .identity import Caller, caller
 from .storefiles import IMMUTABLE, REVALIDATE, StoreFiles, store_file, version
-from .tokens import Minter
+from .tokens import Minter, Via
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -348,7 +348,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "not a push service")
         headers = postgrest.request_headers(
             {"content-type": "application/json"},
-            kernel.minter.user(who.sub),
+            kernel.minter.user(who.sub, Via.APP),
             migrations.API_SCHEMA,
         )
         # A browser hands out the same endpoint again on re-subscribe.
@@ -413,7 +413,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             "/" + path,
             params=request.query_params.multi_items(),
             headers=postgrest.request_headers(
-                dict(request.headers), kernel.minter.user(who.sub), schema
+                dict(request.headers), kernel.minter.user(who.sub, Via.APP), schema
             ),
             content=await request.body(),
         )

@@ -43,10 +43,11 @@ from mcp.types import (
 from pydantic import AnyUrl, BaseModel
 from starlette.routing import Route
 
-from . import oauth, postgrest
+from . import migrations, oauth, postgrest
 from .access import content_security_policy
 from .identity import caller
 from .oauth import CONSENT_PATH, MCP_PATH, SCOPES, Provider, Scope
+from .tokens import via_mcp
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -63,6 +64,9 @@ INSTRUCTIONS: Final = (
 READ_METHODS: Final = frozenset({"GET", "HEAD"})
 WRITE_VERBS: Final = {"POST": "Write to", "PATCH": "Change", "DELETE": "Delete from"}
 CONFIRM_BODY_CHARS: Final = 500
+# The core functions MCP may call. Purge is not one: only the app may.
+CORE_READ_RPC: Final = frozenset({"history", "trash"})
+CORE_WRITE_RPC: Final = frozenset({"restore"})
 # Any: JSON values, whatever the table holds. A tool returns it inside an
 # object: FastMCP sends each item of a bare list as its own text block, and
 # a client that reads the text gets one object, or nothing for no rows.
@@ -126,11 +130,41 @@ async def call(
     reminder, invisibly, even after its grant ends.
     """
     method = method.upper()
-    sub = require(ctx, Scope.READ if method in READ_METHODS else Scope.WRITE)
+    require(ctx, Scope.READ if method in READ_METHODS else Scope.WRITE)
     kernel = kernel_of(ctx)
     schema = kernel.schema_for(scope) if scope in scopes_of(kernel) else None
     if schema is None:
         raise ToolError(f"no data scope {scope!r}; see the data_scopes tool")
+    return await _postgrest(ctx, schema, method, path, params=params, body=body)
+
+
+async def core_rpc(ctx: Context, function: str, args: dict[str, object]) -> Any:
+    """One of the history functions in the core API, which `call` refuses.
+
+    Read-only functions need `read`, restore needs `write`.
+    """
+    scope = Scope.READ if function in CORE_READ_RPC else Scope.WRITE
+    if function not in CORE_READ_RPC | CORE_WRITE_RPC:
+        raise ToolError(f"no core function {function!r}")
+    require(ctx, scope)
+    return await _postgrest(
+        ctx, migrations.API_SCHEMA, "POST", f"/rpc/{function}", body=args
+    )
+
+
+async def _postgrest(
+    ctx: Context,
+    schema: str,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, str] | list[tuple[str, str]] | None = None,
+    body: object = None,
+) -> Any:
+    token = token_of(ctx)
+    if token.subject is None:
+        raise ToolError("no access token")
+    kernel = kernel_of(ctx)
     response = await kernel.data.request(
         method,
         "/" + path.lstrip("/"),
@@ -141,7 +175,7 @@ async def call(
                 "accept": "application/json",
                 "prefer": "return=representation",
             },
-            kernel.minter.user(sub),
+            kernel.minter.user(token.subject, via_mcp(token.client_id)),
             schema,
         ),
         content=None if body is None else json.dumps(body),
@@ -403,6 +437,54 @@ def build(provider: Provider, completions: Completions) -> FastMCP:
             + "?",
         )
         return {"result": await call(ctx, scope, method, path, params=query, body=body)}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def history(
+        ctx: Context,
+        scope: str | None = None,
+        table: str | None = None,
+        key: dict[str, Json] | None = None,
+        before: int | None = None,
+        max_rows: int = 50,
+    ) -> dict[str, Json]:
+        """Earlier states of the person's records, newest first.
+
+        Every insert, change and delete keeps a version, with who made it
+        (`via`: app, or mcp:<client>). Narrow it to one record with scope,
+        table and key, for example {"id": 7}. Page with `before`, the
+        smallest id seen. Pass a version id to restore to bring it back.
+        """
+        args: dict[str, object] = {"max_rows": max_rows}
+        for name, value in (
+            ("of_scope", scope),
+            ("of_table", table),
+            ("of_key", key),
+            ("before", before),
+        ):
+            if value is not None:
+                args[name] = value
+        return {"versions": await core_rpc(ctx, "history", args)}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def trash(ctx: Context) -> dict[str, Json]:
+        """Deleted records, one entry per delete with what it took along.
+
+        Deleting a contact takes its notes, dates and fields too; they come
+        back together. Only the person can empty the trash, in the app.
+        """
+        return {"entries": await core_rpc(ctx, "trash", {})}
+
+    @server.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def restore(ctx: Context, version: int) -> dict[str, Json]:
+        """Bring back a version from history, or a trash entry by its id.
+
+        A live record gets that state back. A deleted one comes back with
+        everything its delete took along. Rows that cannot come back yet
+        are listed in `failed` with the reason, and stay in the trash.
+        A restore is itself a change, so it can be undone the same way.
+        """
+        result: dict[str, Json] = await core_rpc(ctx, "restore", {"version": version})
+        return result
 
     return server
 
