@@ -161,7 +161,7 @@ the only Python is one job.
 - The page writes the browser's time zone to `preference`; dates and
   reminder times use it.
 
-## MCP (next)
+## MCP
 
 A Streamable HTTP MCP server at `/mcp`, for cloud AI clients (claude.ai
 custom connectors) and local agents. Decided:
@@ -197,9 +197,37 @@ custom connectors) and local agents. Decided:
   uvicorn. After deploy: an unauthenticated `POST /mcp` answers 401 with
   `WWW-Authenticate: ... resource_metadata`, and an event stream lives
   past 30 seconds through Caddy.
-- Order: auth and transport end to end with one trivial tool, deployed
-  and probed; then `ctx.mcp`, the curated tools, resources and prompts;
-  the experimental features last.
+- MCP never reaches the core scope: a push subscription there would get
+  every reminder. Every generic write asks the person first.
+- Prompts embed records as resources and say they are data, not
+  instructions: notes are free text.
+- Not yet built: resource subscriptions and tasks.
+
+## Security
+
+The data is personal: people, notes about them, dates. A review in
+November 2026 found the holes the MCP section closes, and these.
+
+Accepted for now, by the owner:
+
+- Hetztop runs agents as `lillecarl`, a PostgreSQL superuser with
+  password-free root through `ai-rebuild`. Any agent session there can
+  read all Hey Carl data. The real fix is a host with no agents.
+- One factor: dex's local password. Caddy limits sign-in POSTs per
+  address (croshome `gate.nix`); there is no second factor.
+- No backups and no disk encryption.
+
+Open:
+
+- A client can approve its own elicitation, so confirmation guards
+  against model mistakes, not a hostile client. A trash the person
+  empties in the app would.
+- Grants renew forever, and a reused refresh token does not end its
+  grant (OAuth 2.1 recommends both).
+- Sessions keep working after an address leaves `allowedEmails`.
+- The CSP covers framing only; no `script-src`.
+- systemd sandboxing is basic, and PostgREST runs as the kernel's user.
+- `/register` takes unlimited unauthenticated registrations.
 
 ## Open questions
 
