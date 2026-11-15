@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "name": "counters",
+  "title": "Counters",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_counters",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-counters": "Counters" }
+  }
+}
