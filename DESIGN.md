@@ -324,6 +324,43 @@ Found in review after the build, and open:
   may update. A key change would leave a record neither live nor in the
   trash. No table allows it today.
 
+## Links
+
+Any entry can link to any other: a todo to the person it is for, a
+reminder to a todo, a note to a gift. An entry is a record in a tracked
+table (see History), so every plugin takes part without code of its own.
+
+Decided:
+
+- One core table, `heycarl_private.link`: owner, two ends as
+  (table, key jsonb) like a version, and an optional label of up to 200
+  characters ("for the trip"). Undirected: the ends are stored in a fixed
+  order, so a pair has one link.
+- It is tracked like a plugin table: a link added or removed is in the
+  history and can be undone.
+- No foreign key can point at "any table", so a link to a deleted entry
+  stays and is hidden. When the entry comes back from the trash, its
+  links show again with no extra step. Purging the entry deletes its
+  links for good.
+- The core API, SECURITY DEFINER like History: `link`, `unlink`,
+  `links` (the live entries linked to one entry) and `entries` (search
+  by label across every tracked table, for a picker). `link` checks that
+  both ends are live and the caller's.
+- An entry's label is a guess from its columns: a name, a title, a body.
+  A plugin may name a route for a table, with
+  `heycarl_sdk.entry_route('contact', '/p/crm/heycarl-crm#/contact/{id}')`;
+  the reminders the CRM makes carry such URLs already. The panel links an
+  entry there, or to the plugin's page when it names none.
+- MCP: `entries_search`, `links_list`, `link`, `unlink`. Unlink asks no
+  confirmation: undo brings a link back.
+- The UI: a Svelte component in the SDK, `Related.svelte`, that each
+  plugin page embeds under an entry. It lists the links, adds one through
+  the picker, and removes one.
+- How two people are related stays in the CRM (`relationship`, with kinds
+  such as parent and child, each with its reverse). MCP gets
+  `people_relate` and `people_unrelate` for it. A generic link between
+  two people says only that they are linked, with a label.
+
 ## Security
 
 The data is personal: people, notes about them, dates. A review in
