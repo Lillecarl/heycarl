@@ -50,3 +50,24 @@ export interface PluginInfo {
 	title: string;
 	frontend: { module: string; pages: Record<string, string> } | null;
 }
+
+let pluginList: Promise<PluginInfo[]> | null = null;
+
+/** The kernel's plugin list, fetched once per module; a failure is not kept. */
+export function plugins(): Promise<PluginInfo[]> {
+	pluginList ??= api<PluginInfo[]>('/api/plugins').catch((e: unknown) => {
+		pluginList = null;
+		throw e;
+	});
+	return pluginList;
+}
+
+/** Each plugin's first page, by plugin name: where its entries open by default. */
+export async function pluginPages(): Promise<Record<string, string>> {
+	return Object.fromEntries(
+		(await plugins()).flatMap((p) => {
+			const first = Object.keys(p.frontend?.pages ?? {})[0];
+			return first ? [[p.name, `/p/${p.name}/${first}`]] : [];
+		})
+	);
+}
