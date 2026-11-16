@@ -132,7 +132,7 @@
 		if (!contact || !confirm(`Delete ${fullName(contact)} and everything about them?`)) return;
 		try {
 			await del(`contact?id=eq.${id}`);
-			location.hash = '';
+			location.hash = '#/';
 		} catch (e) {
 			error = String(e);
 		}
