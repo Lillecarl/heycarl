@@ -151,8 +151,11 @@
 
 	function remove(c: Counter): void {
 		deleting = false;
-		location.hash = '';
-		run(() => data(SCOPE, `counter?id=eq.${c.id}`, { method: 'DELETE' }));
+		// Not location.hash = '': that reloads the page and aborts the DELETE.
+		run(async () => {
+			await data(SCOPE, `counter?id=eq.${c.id}`, { method: 'DELETE' });
+			location.hash = '#/';
+		});
 	}
 
 	function toggle(c: Counter): void {
