@@ -4,3 +4,5 @@ build/
 .svelte-kit/
 __pycache__/
 result*
+frontend/static/themes/
+frontend/src/themes/

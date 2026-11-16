@@ -162,6 +162,15 @@ testers.runNixOSTest {
             digest = base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()
             assert f"'sha256-{digest}'" in csp, csp
         assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";")[0], csp
+        assert "heycarl.theme" in "".join(scripts), scripts
+
+    with subtest("the theme list and the default palette are served"):
+        themes = json.loads(curl(f"-f {as_alice} http://hey/themes/themes.json"))
+        slugs = {t["slug"] for t in themes}
+        assert {"gruvbox-dark-hard", "gruvbox-light-medium"} <= slugs, sorted(slugs)[:10]
+        sheets = re.findall(r'href="(/_app/immutable/[^"]+\.css)"', body)
+        css = "".join(curl(f"-f {as_alice} 'http://hey{s}'") for s in sheets)
+        assert "--hc-base00:#1d2021" in css.replace(" ", ""), sheets
 
     with subtest("an unknown API path is a 404, not the shell"):
         assert status(f"{as_alice} http://hey/api/nope") == "404"

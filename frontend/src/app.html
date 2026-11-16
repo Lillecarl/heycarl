@@ -10,6 +10,21 @@
 		<link rel="manifest" href="/manifest.webmanifest" />
 		<link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
 		<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+		<script>
+			// The picked theme, before the first paint: src/lib/theme.ts stores
+			// it. Only #rrggbb on the 16 roles reaches the page. The kernel puts
+			// this script's hash in the CSP.
+			try {
+				const theme = JSON.parse(localStorage.getItem('heycarl.theme') ?? 'null');
+				const root = document.documentElement.style;
+				for (const [role, colour] of Object.entries(theme?.palette ?? {})) {
+					if (/^base0[0-9A-F]$/.test(role) && /^#[0-9a-f]{6}$/.test(colour)) root.setProperty(`--hc-${role}`, colour);
+				}
+				if (theme?.variant === 'light' || theme?.variant === 'dark') root.colorScheme = theme.variant;
+			} catch {
+				// No storage, or nothing stored: the defaults stand.
+			}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body>

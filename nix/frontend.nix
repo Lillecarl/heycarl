@@ -6,6 +6,7 @@
   pnpmConfigHook,
   fetchPnpmDeps,
   librsvg,
+  themes,
 }:
 # The whole pnpm workspace in one build: the shell and every plugin frontend.
 # One lock, so one dependency fetch.
@@ -68,6 +69,10 @@ stdenv.mkDerivation (finalAttrs: {
       rsvg-convert -w $size -h $size frontend/static/icons/icon.svg \
         -o frontend/static/icons/icon-$size.png
     done
+    # base16 schemes for the picker, and the defaults the root layout
+    # imports, so they are inlined with the rest of the CSS (nix/themes.nix).
+    install -Dm644 ${themes}/themes.json frontend/static/themes/themes.json
+    install -Dm644 ${themes}/defaults.css frontend/src/themes/defaults.css
     pnpm --filter @heycarl/shell exec svelte-kit sync
     pnpm --recursive build
     runHook postBuild

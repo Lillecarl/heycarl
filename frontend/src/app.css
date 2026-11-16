@@ -1,35 +1,77 @@
-:root {
-	color-scheme: dark light;
-	--hc-bg: #1d2021;
-	--hc-fg: #ebdbb2;
-	--hc-muted: #a89984;
-	--hc-accent: #83a598;
-	--hc-error: #fb4934;
-	font-family: system-ui, sans-serif;
-}
+/*
+ * The theme is the tokens. A restyle replaces the tokens layer and nothing
+ * else. Plugin pages live in shadow roots: custom properties inherit through
+ * one, classes do not, so plugins read the --hc-* tokens.
+ *
+ * Unlayered CSS beats every layer, so a page's own styles win over these
+ * without specificity fights.
+ */
+@layer hc.tokens, hc.base;
 
-@media (prefers-color-scheme: light) {
+/*
+ * Every colour is a base16 role (--hc-base00 to --hc-base0F, set by
+ * themes/defaults.css or the picked theme), or calculated from one. The
+ * roles follow tinted-theming's base16 styling guide:
+ *
+ *   base00  default background            base08  error (red)
+ *   base01  lighter background: surfaces  base09  info (orange)
+ *   base02  selection background, borders base0A  warning (yellow)
+ *   base04  dark foreground: muted text   base0B  success (green)
+ *   base05  default foreground            base0C  accent and links (cyan)
+ */
+@layer hc.tokens {
 	:root {
-		--hc-bg: #fbf1c7;
-		--hc-fg: #3c3836;
-		--hc-muted: #7c6f64;
-		--hc-accent: #076678;
-		--hc-error: #9d0006;
+		color-scheme: light dark;
+		--hc-bg: var(--hc-base00);
+		--hc-surface: var(--hc-base01);
+		--hc-selection: var(--hc-base02);
+		--hc-border: var(--hc-base02);
+		--hc-muted: var(--hc-base04);
+		--hc-fg: var(--hc-base05);
+		--hc-accent: var(--hc-base0C);
+		--hc-accent-fg: var(--hc-base00);
+		--hc-error: var(--hc-base08);
+		--hc-info: var(--hc-base09);
+		--hc-warning: var(--hc-base0A);
+		--hc-success: var(--hc-base0B);
+		--hc-error-surface: color-mix(in oklab, var(--hc-error) 12%, var(--hc-surface));
+		--hc-radius: 10px;
+		--hc-font: ui-sans-serif, system-ui, sans-serif;
+		--hc-mono: ui-monospace, monospace;
 	}
 }
 
-body {
-	margin: 0;
-	background: var(--hc-bg);
-	color: var(--hc-fg);
+@layer hc.base {
+	* {
+		box-sizing: border-box;
+	}
+
+	body {
+		margin: 0;
+		background: var(--hc-bg);
+		color: var(--hc-fg);
+		font-family: var(--hc-font);
+		line-height: 1.5;
+	}
+
+	a {
+		color: var(--hc-accent);
+	}
+
+	::selection {
+		background: var(--hc-selection);
+		color: var(--hc-fg);
+	}
 }
 
 nav {
 	display: flex;
+	align-items: center;
 	gap: 1rem;
 	padding: 0.75rem 1rem;
 	padding-top: max(0.75rem, env(safe-area-inset-top));
-	border-bottom: 1px solid var(--hc-muted);
+	background: var(--hc-surface);
+	border-bottom: 1px solid var(--hc-border);
 	overflow-x: auto;
 }
 
@@ -45,7 +87,6 @@ nav .home {
 }
 
 nav .sign-out {
-	margin-left: auto;
 	font: inherit;
 	color: var(--hc-muted);
 	background: none;

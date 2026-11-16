@@ -12,7 +12,8 @@ in
 }:
 
 let
-  frontend = pkgs.callPackage ./nix/frontend.nix { };
+  themes = pkgs.callPackage ./nix/themes.nix { };
+  frontend = pkgs.callPackage ./nix/frontend.nix { inherit themes; };
   plugin = name: pkgs.callPackage ./nix/plugin.nix { inherit name frontend; };
   pluginNames = [
     "todos"
@@ -28,7 +29,12 @@ let
   };
 in
 {
-  inherit kernel frontend plugins;
+  inherit
+    kernel
+    frontend
+    plugins
+    themes
+    ;
   default = kernel;
   nixosModule = ./nix/module.nix;
 

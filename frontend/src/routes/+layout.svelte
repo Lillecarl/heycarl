@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { onMount, type Snippet } from 'svelte';
 	import { registry } from '#lib/plugins.svelte.ts';
+	import ThemePicker from '#lib/ThemePicker.svelte';
+	// The default base16 palettes, light and dark (nix/themes.nix).
+	import '../themes/defaults.css';
 	import '../app.css';
 
 	let { children }: { children: Snippet } = $props();
@@ -22,6 +25,7 @@
 	{/each}
 	<a href="/history">History</a>
 	<a href="/connect">Connect AI</a>
+	<ThemePicker />
 	<button class="sign-out" onclick={signOut}>Sign out</button>
 </nav>
 
