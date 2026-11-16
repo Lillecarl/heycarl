@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "name": "places",
+  "title": "Places",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_places",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-places": "Places" }
+  }
+}

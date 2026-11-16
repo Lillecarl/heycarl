@@ -162,6 +162,43 @@ with a nonzero delta, a note and a time, so the history is the data.
 - Days in `daily_totals` are in a zone the caller names. The page
   sends the browser's zone.
 
+## Places
+
+A place is a named point (WGS 84 degrees) with a radius in metres. Entries
+bind to a place in two ways, and neither needs code in the other plugin:
+
+- A core link from the entry to the place.
+- A tag that the entry and the place both carry. A todo tagged "hardware"
+  is bound to every place tagged "hardware".
+
+Decided:
+
+- Hey Carl never stores where the person is. The position is an argument
+  to `near` and `here`, not a row, and no job asks for it.
+- The page sends the position in a POST body, so no URL and no access log
+  holds it. The SDK reads it once per press (`@heycarl/sdk/position`),
+  never with `watchPosition`.
+- Places themselves are ordinary data: owner-only RLS, history, trash,
+  tags and links, like a counter.
+- Distance is haversine in SQL. One person has tens of places, so a scan
+  is fast and PostGIS adds nothing yet.
+- `near(lat, lon, within)`: places within `within` metres, nearest
+  first, with `inside`. `here(lat, lon)`: the entries
+  bound to the places the point is inside, with `via_tag` for a tag
+  binding. An entry bound both ways comes once, as a link.
+- The kernel's Permissions-Policy allows `geolocation=(self)`. The browser
+  still asks the person.
+
+Planned:
+
+- SL departures for saved stops and lines, in their own plugin. A stop is
+  bound to a place, so "What's here?" shows its next departures.
+- A notice on arrival needs a position while the app is closed, which a
+  PWA cannot get. A native sender (OwnTracks in HTTP mode, or an iOS
+  Shortcuts automation) can POST it to a public route with an app
+  password. The route checks it against the places and sends a web push,
+  and stores nothing.
+
 ## Calendar
 
 Google Calendar into Hey Carl, one way and read-only. The only scope is

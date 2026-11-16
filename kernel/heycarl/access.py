@@ -141,8 +141,10 @@ def read_cookie(headers: list[tuple[bytes, bytes]], name: str) -> str | None:
 INLINE_SCRIPT: Final = re.compile(
     r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE
 )
+# geolocation: the places page, this site only. The browser still asks the
+# person first.
 PERMISSIONS_POLICY: Final = (
-    "camera=(), microphone=(), geolocation=(), payment=(), usb=(),"
+    "camera=(), microphone=(), geolocation=(self), payment=(), usb=(),"
     " serial=(), bluetooth=(), display-capture=()"
 )
 
