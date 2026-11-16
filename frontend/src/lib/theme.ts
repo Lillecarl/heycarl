@@ -2,6 +2,8 @@
 // The choice lives in the person's preference row; this browser keeps a
 // copy under STORAGE_KEY, which app.html reads before the first paint.
 
+import { api, data, json } from '@heycarl/sdk';
+
 export const ROLES = [
 	'base00', 'base01', 'base02', 'base03', 'base04', 'base05', 'base06', 'base07',
 	'base08', 'base09', 'base0A', 'base0B', 'base0C', 'base0D', 'base0E', 'base0F'
@@ -18,30 +20,19 @@ export type Theme = {
 };
 
 const STORAGE_KEY = 'heycarl.theme';
-const PREFERENCE = '/api/data/core/preference';
-const SET_THEME = '/api/data/core/rpc/preference_set_theme';
 
 /** The slug saved for this person, or null for the system default. */
 export async function savedTheme(): Promise<string | null> {
-	const response = await fetch(PREFERENCE);
-	if (!response.ok) throw new Error(`The saved theme did not load: ${response.status}`);
-	const rows: { theme: string | null }[] = await response.json();
+	const rows = await data<{ theme: string | null }[]>('core', 'preference');
 	return rows[0]?.theme ?? null;
 }
 
 export async function saveTheme(slug: string | null): Promise<void> {
-	const response = await fetch(SET_THEME, {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ theme: slug })
-	});
-	if (!response.ok) throw new Error(`The theme was not saved: ${response.status}`);
+	await data('core', 'rpc/preference_set_theme', json('POST', { theme: slug }));
 }
 
-export async function loadThemes(): Promise<Theme[]> {
-	const response = await fetch('/themes/themes.json');
-	if (!response.ok) throw new Error(`The themes did not load: ${response.status}`);
-	return response.json();
+export function loadThemes(): Promise<Theme[]> {
+	return api<Theme[]>('/themes/themes.json');
 }
 
 export function storedTheme(): string | null {

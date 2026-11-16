@@ -87,16 +87,13 @@
 		<button onclick={test}>Send a test</button>
 		<button onclick={enable}>Subscribe again</button>
 	{:else}
-		<p>…</p>
+		<p class="muted">Checking…</p>
 	{/if}
-	{#if message}<p class="message">{message}</p>{/if}
+	{#if message}<p class="muted" role="status">{message}</p>{/if}
 </section>
 
 <style>
 	section {
 		margin-top: 2rem;
-	}
-	.message {
-		color: var(--hc-muted);
 	}
 </style>

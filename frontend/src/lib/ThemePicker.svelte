@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import {
 		loadThemes,
 		savedTheme,
@@ -17,41 +18,35 @@
 	const light = $derived(themes.filter((t) => t.variant === 'light'));
 	const dark = $derived(themes.filter((t) => t.variant === 'dark'));
 
-	$effect(() => {
+	const report = (what: string) => (error: unknown) => {
+		problem = `${what}: ${String(error)}`;
+	};
+
+	onMount(() => {
 		// Without the saved row, this browser's copy stands.
-		const saved = savedTheme().catch((error: Error) => {
-			problem = error.message;
+		const saved = savedTheme().catch((e: unknown) => {
+			report('The saved theme did not load')(e);
 			return undefined;
 		});
-		Promise.all([loadThemes(), saved]).then(
-			([found, slug]) => {
-				themes = found;
-				if (slug === undefined) return;
-				const theme = found.find((t) => t.slug === slug) ?? null;
-				chosen = theme?.slug ?? DEFAULT;
-				useTheme(theme);
-			},
-			(error: Error) => (problem = error.message)
-		);
+		Promise.all([loadThemes(), saved]).then(([found, slug]) => {
+			themes = found;
+			if (slug === undefined) return;
+			const theme = found.find((t) => t.slug === slug) ?? null;
+			chosen = theme?.slug ?? DEFAULT;
+			useTheme(theme);
+		}, report('The themes did not load'));
 	});
 
 	function choose(slug: string): void {
 		chosen = slug;
 		useTheme(themes.find((t) => t.slug === slug) ?? null);
-		saveTheme(slug || null).then(
-			() => (problem = null),
-			(error: Error) => (problem = error.message)
-		);
+		saveTheme(slug || null).then(() => (problem = null), report('The theme was not saved'));
 	}
 </script>
 
 <label class="picker">
 	<span>Theme</span>
-	<select
-		value={chosen}
-		onchange={(e) => choose(e.currentTarget.value)}
-		title={problem ?? undefined}
-	>
+	<select value={chosen} onchange={(e) => choose(e.currentTarget.value)}>
 		<option value={DEFAULT}>Follow the system</option>
 		{#if themes.length === 0 && chosen !== DEFAULT}<option value={chosen}>{chosen}</option>{/if}
 		<optgroup label="Light">
@@ -62,6 +57,7 @@
 		</optgroup>
 	</select>
 </label>
+{#if problem}<span class="error" role="alert">{problem}</span>{/if}
 
 <style>
 	.picker {
@@ -72,13 +68,11 @@
 		color: var(--hc-muted);
 		white-space: nowrap;
 	}
-
 	select {
-		font: inherit;
-		background: var(--hc-bg);
 		color: var(--hc-fg);
-		border: 1px solid var(--hc-border);
-		border-radius: var(--hc-radius);
 		max-width: 12rem;
+	}
+	.error {
+		white-space: nowrap;
 	}
 </style>
