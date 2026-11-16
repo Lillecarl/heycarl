@@ -37,6 +37,16 @@ Architecture: DESIGN.md. This file: frontend conventions. Standard HTML, ARIA an
 - Plugin list: `plugins()` / `pluginPages()` from the SDK, cached per module.
 - `null` means not loaded: show Loading. `[]` means empty: show the empty text. Never one state for both.
 
+## Errors
+
+- State holds the thrown value: `let error = $state<unknown>(null)`, `error = e`. Never `String(e)`, never a string built from it.
+- Render with `<ErrorNotice {error} />` from `@heycarl/sdk/ErrorNotice.svelte`: `role="alert"`, base `.error`, nothing while null. No hand-written error paragraph.
+- Context: `new Error('Could not revoke', { cause: e })`; shown as "Could not revoke: <reason>".
+- Branch on `e instanceof ApiError` and `e.status` / `e.code` (`status` 0: no answer). Never parse a body or a message.
+- Text for a person comes from `errorText()` in the SDK; a new mapping (status, SQLSTATE) goes there, not in a page.
+- Kernel `/api/*` errors: PostgREST's shape `{code, message, details, hint}` via `heycarl/errors.py`, code `HC<status>`. Raise `HTTPException` with a message for a person; never build `{"detail": ...}` by hand.
+- `.error` without `role="alert"` is for state shown as text (a sync that failed), not for a thrown value.
+
 ## HTML and ARIA
 
 - Headings: the shell renders the page `<h1>` and `<title>` from the plugin's page name. Plugins start at h2; `Related` is h3.
