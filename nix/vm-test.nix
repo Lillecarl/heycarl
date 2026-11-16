@@ -186,7 +186,7 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(curl(f"{as_alice} http://hey/api/plugins"))
-        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "crm", "reminders", "todos"], plugins
+        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "crm", "reminders", "tags", "todos"], plugins
         for p in plugins:
             curl(f"-f {as_alice} 'http://hey{p['frontend']['module']}' -o /dev/null")
 
@@ -219,6 +219,30 @@ testers.runNixOSTest {
         assert status(f"{as_bob} -X DELETE '{counters}/counter?id=eq.{cid}'") == "204"
         [mine] = json.loads(curl(f"{as_alice} '{counters}/counter_value?id=eq.{cid}'"))
         assert (mine["value"], mine["events"]) == (2, 1), mine
+
+    with subtest("tags are private, and a tag is a link to the entry it is on"):
+        post = "-H 'content-type: application/json' -H 'prefer: return=representation'"
+        tags = "http://hey/api/data/tags"
+        [milk] = json.loads(curl(
+            f"-f {as_alice} {post} -d '{{\"title\": \"milk\"}}' http://hey/api/data/todos/todo"
+        ))
+        entry = f"\"of_scope\": \"todos\", \"of_table\": \"todo\", \"of_key\": {{\"id\": {milk['id']}}}"
+        made = json.loads(curl(
+            f"-f {as_alice} {post} -d '{{{entry}, \"name\": \"shopping\"}}' {tags}/rpc/tag_entry"
+        ))
+        keys = json.loads(curl(
+            f"-f {as_alice} {post} -d '{{\"tag_id\": {made['id']}, \"of_scope\": \"todos\", \"of_table\": \"todo\"}}' {tags}/rpc/tagged_keys"
+        ))
+        assert keys == [{"id": milk["id"]}], keys
+        assert status(f"{tags}/tag_summary") == "401"
+        assert json.loads(curl(f"{as_bob} {tags}/tag_summary")) == []
+        assert status(f"{as_bob} {post} -d '{{\"tag_id\": {made['id']}}}' {tags}/rpc/tagged") == "404"
+        assert status(f"{as_bob} {post} -d '{{{entry}, \"name\": \"mine\"}}' {tags}/rpc/tag_entry") == "404"
+        assert "<title>Hey Carl</title>" in curl(f"{as_alice} http://hey/p/tags/heycarl-tags")
+        # A later subtest counts Alice's todos: the tagged one goes again.
+        curl(f"-f {as_alice} -X DELETE 'http://hey/api/data/todos/todo?id=eq.{milk['id']}'")
+        [left] = json.loads(curl(f"-f {as_alice} {tags}/tag_summary"))
+        assert left["entries"] == 0, left
 
     with subtest("Google Calendar through a fake Google"):
         machine.wait_for_unit("fake-google.service")

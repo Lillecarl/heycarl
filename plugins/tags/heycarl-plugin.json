@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "name": "tags",
+  "title": "Tags",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_tags",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-tags": "Tags" }
+  }
+}
