@@ -36,6 +36,7 @@ Architecture: DESIGN.md. This file: frontend conventions. Standard HTML, ARIA an
 - Every request through the SDK: `data()`, `api()`, `json()`. No raw `fetch`: the SDK signs in again on 401.
 - Plugin list: `plugins()` / `pluginPages()` from the SDK, cached per module.
 - `null` means not loaded: show Loading. `[]` means empty: show the empty text. Never one state for both.
+- Device position: `position()` from `@heycarl/sdk/position`, once per press of a button. Send it in a POST body, never a query string; never store it; never `watchPosition`.
 
 ## Errors
 
