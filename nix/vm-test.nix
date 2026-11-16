@@ -172,6 +172,15 @@ testers.runNixOSTest {
         css = "".join(curl(f"-f {as_alice} 'http://hey{s}'") for s in sheets)
         assert "--hc-base00:#1d2021" in css.replace(" ", ""), sheets
 
+    with subtest("each person keeps their own theme"):
+        pref = "http://hey/api/data/core/preference"
+        set_theme = "http://hey/api/data/core/rpc/preference_set_theme"
+        assert status(pref) == "401"
+        assert status(f"-X POST -H 'content-type: application/json' -d '{{\"theme\":\"nord\"}}' {set_theme}") == "401"
+        curl(f"-f -X POST {as_alice} -H 'content-type: application/json' -d '{{\"theme\":\"nord\"}}' {set_theme}")
+        assert json.loads(curl(f"-f {as_alice} {pref}"))[0]["theme"] == "nord"
+        assert json.loads(curl(f"-f {as_bob} {pref}")) == []
+
     with subtest("an unknown API path is a 404, not the shell"):
         assert status(f"{as_alice} http://hey/api/nope") == "404"
 

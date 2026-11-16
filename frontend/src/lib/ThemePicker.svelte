@@ -1,5 +1,12 @@
 <script lang="ts">
-	import { loadThemes, storedTheme, useTheme, type Theme } from '#lib/theme.ts';
+	import {
+		loadThemes,
+		savedTheme,
+		saveTheme,
+		storedTheme,
+		useTheme,
+		type Theme
+	} from '#lib/theme.ts';
 
 	const DEFAULT = '';
 
@@ -11,8 +18,19 @@
 	const dark = $derived(themes.filter((t) => t.variant === 'dark'));
 
 	$effect(() => {
-		loadThemes().then(
-			(found) => (themes = found),
+		// Without the saved row, this browser's copy stands.
+		const saved = savedTheme().catch((error: Error) => {
+			problem = error.message;
+			return undefined;
+		});
+		Promise.all([loadThemes(), saved]).then(
+			([found, slug]) => {
+				themes = found;
+				if (slug === undefined) return;
+				const theme = found.find((t) => t.slug === slug) ?? null;
+				chosen = theme?.slug ?? DEFAULT;
+				useTheme(theme);
+			},
 			(error: Error) => (problem = error.message)
 		);
 	});
@@ -20,6 +38,10 @@
 	function choose(slug: string): void {
 		chosen = slug;
 		useTheme(themes.find((t) => t.slug === slug) ?? null);
+		saveTheme(slug || null).then(
+			() => (problem = null),
+			(error: Error) => (problem = error.message)
+		);
 	}
 </script>
 

@@ -1,6 +1,6 @@
-// base16 themes. The list is static/themes/themes.json (nix/themes.nix);
-// the choice lives in this browser only, under STORAGE_KEY, which app.html
-// reads before the first paint.
+// base16 themes. The list is static/themes/themes.json (nix/themes.nix).
+// The choice lives in the person's preference row; this browser keeps a
+// copy under STORAGE_KEY, which app.html reads before the first paint.
 
 export const ROLES = [
 	'base00', 'base01', 'base02', 'base03', 'base04', 'base05', 'base06', 'base07',
@@ -18,6 +18,25 @@ export type Theme = {
 };
 
 const STORAGE_KEY = 'heycarl.theme';
+const PREFERENCE = '/api/data/core/preference';
+const SET_THEME = '/api/data/core/rpc/preference_set_theme';
+
+/** The slug saved for this person, or null for the system default. */
+export async function savedTheme(): Promise<string | null> {
+	const response = await fetch(PREFERENCE);
+	if (!response.ok) throw new Error(`The saved theme did not load: ${response.status}`);
+	const rows: { theme: string | null }[] = await response.json();
+	return rows[0]?.theme ?? null;
+}
+
+export async function saveTheme(slug: string | null): Promise<void> {
+	const response = await fetch(SET_THEME, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ theme: slug })
+	});
+	if (!response.ok) throw new Error(`The theme was not saved: ${response.status}`);
+}
 
 export async function loadThemes(): Promise<Theme[]> {
 	const response = await fetch('/themes/themes.json');
