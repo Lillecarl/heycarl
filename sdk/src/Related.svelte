@@ -51,13 +51,25 @@
 		links = await rpc<Link[]>('links', { of_scope: scope, of_table: table, of_key: key });
 	}
 
+	// Only the newest search may fill the list: an older answer that arrives
+	// late would show results for text no longer in the box.
+	let searchGeneration = 0;
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function queueSearch(): void {
+		clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => run(search), 200);
+	}
+
 	async function search(): Promise<void> {
+		const mine = ++searchGeneration;
 		const q = query.trim();
 		if (!q) {
 			found = [];
 			return;
 		}
 		const rows = await rpc<{ entry: Entry }[]>('entries', { q, max_rows: 10 });
+		if (mine !== searchGeneration) return;
 		const linked = new Set(links.map((l) => JSON.stringify([l.entry.scope, l.entry.table, l.entry.key])));
 		found = rows
 			.map((r) => r.entry)
@@ -90,6 +102,8 @@
 			await load();
 		});
 	}
+
+	$effect(() => () => clearTimeout(searchTimer));
 
 	$effect(() => {
 		// Reload when the page shows another entry.
@@ -132,7 +146,7 @@
 			<input
 				placeholder="Find a person, todo, reminder…"
 				bind:value={query}
-				oninput={() => run(search)}
+				oninput={queueSearch}
 			/>
 			<input placeholder="How they relate (optional)" bind:value={label} maxlength="200" />
 			{#if found.length}
