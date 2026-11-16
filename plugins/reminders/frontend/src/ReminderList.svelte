@@ -15,7 +15,8 @@
 		last_error: string | null;
 	}
 
-	let reminders = $state<Reminder[]>([]);
+	// null until the first answer.
+	let reminders = $state<Reminder[] | null>(null);
 	let title = $state('');
 	let when = $state(inAnHour());
 	let error = $state<string | null>(null);
@@ -59,32 +60,49 @@
 
 	onMount(() => {
 		load().catch((e) => (error = String(e)));
+		// The kernel sends due reminders; this shows their new state.
 		const timer = setInterval(() => load().catch(() => {}), 30_000);
 		return () => clearInterval(timer);
 	});
 </script>
 
-<form onsubmit={add}>
-	<input class="title" bind:value={title} placeholder="Remind me to…" maxlength="200" />
-	<input type="datetime-local" bind:value={when} />
+<form class="actions" onsubmit={add}>
+	<input
+		class="title"
+		bind:value={title}
+		aria-label="Reminder"
+		placeholder="Remind me to…"
+		maxlength="200"
+	/>
+	<input type="datetime-local" aria-label="When" bind:value={when} />
 	<button type="submit">Add</button>
 </form>
 
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 
-<ul>
-	{#each reminders as r (r.id)}
+{#if reminders === null}
+	<p class="muted">Loading…</p>
+{:else if !reminders.length}
+	<p class="muted">No reminders yet.</p>
+{/if}
+
+<ul class="plain">
+	{#each reminders ?? [] as r (r.id)}
 		<li class={r.state}>
-			<span class="when">{format.format(new Date(r.due_at))}</span>
-			<span class="what" title={r.last_error ?? ''}>{r.title}</span>
-			<span class="state">{r.state}</span>
-			<button
-				class="remove"
-				aria-label="Related"
-				aria-expanded={open === r.id}
-				onclick={() => (open = open === r.id ? null : r.id)}>🔗</button
-			>
-			<button class="remove" onclick={() => remove(r)} aria-label="Delete">×</button>
+			<span class="what">{r.title}</span>
+			<span class="meta muted">
+				<time datetime={r.due_at}>{format.format(new Date(r.due_at))}</time> · {r.state}
+			</span>
+			<span class="buttons">
+				<button
+					class="icon"
+					aria-label="Links of {r.title}"
+					aria-expanded={open === r.id}
+					onclick={() => (open = open === r.id ? null : r.id)}>🔗</button
+				>
+				<button class="icon" aria-label="Delete {r.title}" onclick={() => remove(r)}>×</button>
+			</span>
+			{#if r.last_error}<p class="error why">{r.last_error}</p>{/if}
 			{#if open === r.id}
 				<div class="related"><Related scope="reminders" table="reminder" key={{ id: r.id }} /></div>
 			{/if}
@@ -93,50 +111,45 @@
 </ul>
 
 <style>
-	form {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-	input {
-		font: inherit;
-		padding: 0.5rem;
-	}
 	.title {
 		flex: 1 1 12rem;
 	}
 	ul {
-		list-style: none;
-		padding: 0;
+		margin-top: 1rem;
 	}
 	li {
 		display: grid;
-		grid-template-columns: auto 1fr auto auto auto;
-		gap: 0.75rem;
+		grid-template-columns: 1fr auto;
+		grid-template-areas:
+			'what buttons'
+			'meta buttons';
+		column-gap: 0.5rem;
 		align-items: center;
 		padding: 0.5rem 0;
+		border-bottom: 1px solid var(--hc-border);
 	}
-	.when,
-	.state {
-		opacity: 0.7;
-		font-size: 0.9em;
+	.what {
+		grid-area: what;
+		overflow-wrap: anywhere;
 	}
-	.sent {
-		opacity: 0.5;
+	.meta {
+		grid-area: meta;
+		font-size: 0.875rem;
 	}
-	.failed .state {
-		color: var(--hc-error, red);
+	.buttons {
+		grid-area: buttons;
+		display: flex;
 	}
-	.remove {
-		background: none;
-		border: none;
-		color: inherit;
-		font-size: 1.25rem;
+	.sent .what,
+	.sent .meta {
+		opacity: 0.6;
 	}
-	.error {
-		color: var(--hc-error, red);
+	.failed .meta {
+		color: var(--hc-error);
 	}
+	.why,
 	.related {
 		grid-column: 1 / -1;
+		margin: 0.25rem 0 0;
 	}
 </style>
