@@ -292,7 +292,7 @@ SESSION_TIMEOUT: Final = 45
 
 
 # Any: a tool's structured result, JSON.
-async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
+async def tool(session: ClientSession, name: str, /, **arguments: object) -> Any:
     """The result, unwrapped from a one-key object such as {"people": [...]}.
 
     Also checks what a client that reads only the text sees, as claude.ai
@@ -311,7 +311,7 @@ async def tool(session: ClientSession, name: str, **arguments: object) -> Any:
     return next(iter(content.values())) if len(content) == 1 else content
 
 
-async def failure(session: ClientSession, name: str, **arguments: object) -> str:
+async def failure(session: ClientSession, name: str, /, **arguments: object) -> str:
     result = await session.call_tool(name, arguments, read_timeout_seconds=CALL_TIMEOUT)
     assert result.is_error, result
     return " ".join(getattr(c, "text", "") for c in result.content)

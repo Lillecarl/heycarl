@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from .conftest import as_user, needs_database
-from .test_mcp import Plain, connected, failure, served, tool
+from .test_mcp import Plain, answering, connected, failure, served, tool
 
 if TYPE_CHECKING:
     import httpx
@@ -98,6 +98,95 @@ async def test_a_deleted_subtree_is_one_trash_entry_and_comes_back(
     assert await parents(client, u) == {"a": None, "b": "a", "c": "b", "other": None}
     [back] = await ok(client, u, "GET", f"todos/todo?id=eq.{b}")
     assert back["parent_id"] == a
+
+
+async def new_list(client: httpx.AsyncClient, user: str, name: str) -> int:
+    [row] = await ok(client, user, "POST", "todos/list", {"name": name})
+    return int(row["id"])
+
+
+async def lists_of(client: httpx.AsyncClient, user: str) -> dict[str, int | None]:
+    rows = await ok(client, user, "GET", "todos/todo?select=title,list_id")
+    return {r["title"]: r["list_id"] for r in rows}
+
+
+async def test_nobody_puts_a_todo_in_another_persons_list(
+    client: httpx.AsyncClient,
+) -> None:
+    theirs = await new_list(client, "list-owner", "Shopping")
+    mine = await add(client, "list-intruder", "mine")
+    r = await request(
+        client, "list-intruder", "POST", "todos/todo", {"title": "x", "list_id": theirs}
+    )
+    assert r.status_code == 409, r.text
+    r = await request(
+        client, "list-intruder", "PATCH", f"todos/todo?id=eq.{mine}", {"list_id": theirs}
+    )
+    assert r.status_code == 409, r.text
+    assert await ok(client, "list-intruder", "GET", "todos/list") == []
+    r = await request(client, "list-intruder", "POST", "todos/list", {"name": "Inbox"})
+    assert r.status_code == 400, r.text
+
+
+async def test_a_subtask_is_in_its_parents_list(client: httpx.AsyncClient) -> None:
+    u = "list-follow"
+    shop = await new_list(client, u, "Shopping")
+    work = await new_list(client, u, "Work")
+    a = await add(client, u, "a")
+    await ok(client, u, "PATCH", f"todos/todo?id=eq.{a}", {"list_id": shop})
+    b = await add(client, u, "b", a)
+    c = await add(client, u, "c", b)
+    assert await lists_of(client, u) == {"a": shop, "b": shop, "c": shop}
+    r = await request(client, u, "PATCH", f"todos/todo?id=eq.{c}", {"list_id": work})
+    assert r.status_code == 400, r.text
+    await ok(client, u, "PATCH", f"todos/todo?id=eq.{a}", {"list_id": work})
+    assert await lists_of(client, u) == {"a": work, "b": work, "c": work}
+    other = await add(client, u, "other")
+    await ok(client, u, "PATCH", f"todos/todo?id=eq.{b}", {"parent_id": other})
+    assert await lists_of(client, u) == {"a": work, "b": None, "c": None, "other": None}
+
+
+async def test_a_deleted_list_takes_its_todos_and_comes_back(
+    client: httpx.AsyncClient,
+) -> None:
+    u = "list-trash"
+    shop = await new_list(client, u, "Shopping")
+    milk = await add(client, u, "milk")
+    await ok(client, u, "PATCH", f"todos/todo?id=eq.{milk}", {"list_id": shop})
+    await add(client, u, "oat", milk)
+    await add(client, u, "inbox item")
+    await ok(client, u, "DELETE", f"todos/list?id=eq.{shop}")
+    assert await lists_of(client, u) == {"inbox item": None}
+    [entry] = await ok(client, u, "POST", "core/rpc/trash", {})
+    await ok(client, u, "POST", "core/rpc/restore", {"version": entry["entry"]})
+    assert await lists_of(client, u) == {"milk": shop, "oat": shop, "inbox item": None}
+    assert await parents(client, u) == {"milk": None, "oat": "milk", "inbox item": None}
+
+
+async def test_the_tools_keep_lists(served: Plain) -> None:
+    asked: list[str] = []
+    async with connected(
+        served, sub="list-mcp-sub", elicitation=answering(True, asked)
+    ) as session:
+        shop = await tool(session, "todos_list_add", name="Shopping")
+        await tool(session, "todos_add", title="Milk", list="Shopping")
+        await tool(session, "todos_add", title="Call mum")
+        lists = await tool(session, "todos_lists")
+        assert [(x["name"], x["open"]) for x in lists] == [("inbox", 1), ("Shopping", 1)]
+        [milk] = await tool(session, "todos_list", list=shop["id"])
+        assert milk["title"] == "Milk"
+        [call] = await tool(session, "todos_list", list="inbox")
+        await tool(session, "todos_move", todo_id=call["id"], list="Shopping")
+        assert await tool(session, "todos_list", list="inbox") == []
+        await tool(session, "todos_list_rename", list="Shopping", name="Groceries")
+        assert len(await tool(session, "todos_list", list="Groceries")) == 2
+        assert "no list" in await failure(session, "todos_list", list="Nope")
+        await tool(session, "todos_list_delete", list="Groceries")
+        assert asked == ["Delete the list 'Groceries' and its 2 todos?"]
+        assert await tool(session, "todos_list") == []
+        assert await tool(session, "todos_lists") == [
+            {"id": None, "name": "inbox", "open": 0}
+        ]
 
 
 async def test_the_tools_add_move_and_list_subtasks(served: Plain) -> None:
