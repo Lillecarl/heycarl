@@ -1,9 +1,11 @@
 <svelte:options customElement={{ tag: 'heycarl-tags', extend: withBase }} />
 
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { api, data, json, type PluginInfo } from '@heycarl/sdk';
+	import { onMount, untrack } from 'svelte';
+	import { data, json, pluginPages } from '@heycarl/sdk';
 	import { withBase } from '@heycarl/sdk/base';
+	import { hashHref, hashId, leave } from '@heycarl/sdk/route';
+	import { chipColor } from '@heycarl/sdk/TagChips.svelte';
 
 	interface Tag {
 		id: number;
@@ -21,6 +23,7 @@
 
 	const SCOPE = 'tags';
 	const ROLES = [
+		['', 'None'],
 		['base08', 'Red'],
 		['base09', 'Orange'],
 		['base0A', 'Yellow'],
@@ -31,24 +34,19 @@
 		['base0F', 'Brown']
 	] as const;
 
-	let tags = $state<Tag[]>([]);
+	// null until the first answer.
+	let tags = $state<Tag[] | null>(null);
 	let error = $state<string | null>(null);
 	let name = $state('');
-	// The view lives in the hash (#/tag/12), so a link to a tag opens it.
-	let open = $state<number | null>(parse(location.hash));
-	let entries = $state<Entry[]>([]);
-	let edit = $state<{ name: string; color: string | null } | null>(null);
+	let open = $derived(hashId('tag'));
+	let entries = $state<Entry[] | null>(null);
+	// color '' is no colour: a radio group needs a string value.
+	let edit = $state<{ name: string; color: string } | null>(null);
 	let deleting = $state(false);
 	let pages = $state<Record<string, string>>({});
 
-	let current = $derived(tags.find((t) => t.id === open) ?? null);
+	let current = $derived(tags?.find((t) => t.id === open) ?? null);
 
-	function parse(hash: string): number | null {
-		const m = /^#\/tag\/(\d+)$/.exec(hash);
-		return m ? Number(m[1]) : null;
-	}
-
-	const chip = (color: string | null) => (color ? `var(--hc-${color})` : 'var(--hc-muted)');
 	const href = (e: Entry) => e.url ?? pages[e.scope] ?? '/';
 
 	async function run(action: () => Promise<unknown>): Promise<void> {
@@ -62,26 +60,17 @@
 
 	async function load(): Promise<void> {
 		tags = await data<Tag[]>(SCOPE, 'tag_summary?order=name');
-		if (open !== null && tags.some((t) => t.id === open)) {
-			const rows = await data<{ entry: Entry }[]>(
-				SCOPE,
-				'rpc/tagged',
-				json('POST', { tag_id: open })
-			);
-			entries = rows.map((r) => r.entry);
-		} else {
-			entries = [];
-		}
+		await loadEntries(open);
 	}
 
-	function show(id: number | null): void {
-		open = id;
-		edit = null;
-		deleting = false;
-		run(load);
+	async function loadEntries(id: number | null): Promise<void> {
+		if (id === null) return;
+		const rows = await data<{ entry: Entry }[]>(SCOPE, 'rpc/tagged', json('POST', { tag_id: id }));
+		if (open === id) entries = rows.map((r) => r.entry);
 	}
 
-	function add(): void {
+	function add(event: SubmitEvent): void {
+		event.preventDefault();
 		const wanted = name.trim();
 		if (!wanted) return;
 		run(async () => {
@@ -91,10 +80,11 @@
 		});
 	}
 
-	function save(): void {
+	function save(event: SubmitEvent): void {
+		event.preventDefault();
 		if (!current || !edit) return;
 		const { id } = current;
-		const changes = { name: edit.name.trim(), color: edit.color };
+		const changes = { name: edit.name.trim(), color: edit.color || null };
 		run(async () => {
 			await data(SCOPE, `tag?id=eq.${id}`, json('PATCH', changes));
 			edit = null;
@@ -107,63 +97,48 @@
 		const { id } = current;
 		run(async () => {
 			await data(SCOPE, `tag?id=eq.${id}`, { method: 'DELETE' });
-			location.hash = '#/';
+			leave();
+			await load();
 		});
 	}
 
+	// The hash names the open tag; its entries load when it changes.
+	$effect(() => {
+		const id = open;
+		untrack(() => {
+			edit = null;
+			deleting = false;
+			entries = null;
+			run(() => loadEntries(id));
+		});
+	});
+
 	onMount(() => {
 		run(load);
-		run(async () => {
-			const plugins = await api<PluginInfo[]>('/api/plugins');
-			pages = Object.fromEntries(
-				plugins
-					.filter((p) => p.frontend && Object.keys(p.frontend.pages).length)
-					.map((p) => [p.name, `/p/${p.name}/${Object.keys(p.frontend!.pages)[0]}`])
-			);
-		});
-		const onHash = () => show(parse(location.hash));
-		addEventListener('hashchange', onHash);
-		return () => removeEventListener('hashchange', onHash);
+		run(async () => (pages = await pluginPages()));
 	});
 </script>
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-{#if current}
-	<p><a href="#/">← All tags</a></p>
+{#if open !== null && current}
+	<p><a href={hashHref()}>← All tags</a></p>
 	<h2>
-		<span class="dot" style:background={chip(current.color)}></span>
+		<span class="dot" style:background={chipColor(current.color)}></span>
 		{current.name}
 	</h2>
 	{#if edit}
-		<form
-			class="edit"
-			onsubmit={(e) => {
-				e.preventDefault();
-				save();
-			}}
-		>
-			<input bind:value={edit.name} maxlength="100" required aria-label="Name" />
-			<div class="colors" role="radiogroup" aria-label="Colour">
-				<button
-					type="button"
-					class="swatch"
-					class:chosen={edit.color === null}
-					aria-label="No colour"
-					style:--swatch="var(--hc-muted)"
-					onclick={() => edit && (edit.color = null)}
-				></button>
+		<form class="edit" onsubmit={save}>
+			<label>Name <input bind:value={edit.name} maxlength="100" required /></label>
+			<fieldset>
+				<legend>Colour</legend>
 				{#each ROLES as [role, label] (role)}
-					<button
-						type="button"
-						class="swatch"
-						class:chosen={edit.color === role}
-						aria-label={label}
-						style:--swatch="var(--hc-{role})"
-						onclick={() => edit && (edit.color = role)}
-					></button>
+					<label class="swatch" style:--swatch={chipColor(role || null)}>
+						<input type="radio" name="colour" value={role} bind:group={edit.color} />
+						<span class="visually-hidden">{label}</span>
+					</label>
 				{/each}
-			</div>
+			</fieldset>
 			<div class="actions">
 				<button type="submit" class="primary">Save</button>
 				<button type="button" onclick={() => (edit = null)}>Cancel</button>
@@ -171,11 +146,11 @@
 		</form>
 	{:else}
 		<div class="actions">
-			<button onclick={() => current && (edit = { name: current.name, color: current.color })}
+			<button onclick={() => current && (edit = { name: current.name, color: current.color ?? '' })}
 				>Rename or recolour</button
 			>
 			{#if deleting}
-				<button class="danger" onclick={remove}>Delete for real</button>
+				<button class="danger" onclick={remove}>Delete “{current.name}”</button>
 				<button onclick={() => (deleting = false)}>Keep</button>
 			{:else}
 				<button onclick={() => (deleting = true)}>Delete</button>
@@ -183,13 +158,15 @@
 		</div>
 		{#if deleting}
 			<p class="muted">
-				The {current.entries} tagged entries stay. The tag goes to the trash, and a restore puts
-				it back on them.
+				The {current.entries} tagged entries stay. The tag goes to the trash, and a restore puts it
+				back on them.
 			</p>
 		{/if}
 	{/if}
-	{#if entries.length}
-		<ul class="entries">
+	{#if entries === null}
+		<p class="muted">Loading…</p>
+	{:else if entries.length}
+		<ul class="plain">
 			{#each entries as e (JSON.stringify([e.scope, e.table, e.key]))}
 				<li>
 					<a class="row" href={href(e)}>
@@ -202,23 +179,22 @@
 	{:else}
 		<p class="muted">Nothing carries this tag.</p>
 	{/if}
+{:else if open !== null && tags !== null}
+	<p><a href={hashHref()}>← All tags</a></p>
+	<p>No such tag.</p>
 {:else}
-	<form
-		class="new"
-		onsubmit={(e) => {
-			e.preventDefault();
-			add();
-		}}
-	>
+	<form class="actions new" onsubmit={add}>
 		<input placeholder="New tag" bind:value={name} maxlength="100" aria-label="New tag" />
 		<button type="submit" class="primary">Add</button>
 	</form>
-	{#if tags.length}
-		<ul class="tags">
+	{#if tags === null}
+		<p class="muted">Loading…</p>
+	{:else if tags.length}
+		<ul class="plain">
 			{#each tags as t (t.id)}
 				<li>
-					<a class="row" href="#/tag/{t.id}">
-						<span class="dot" style:background={chip(t.color)}></span>
+					<a class="row" href={hashHref('tag', t.id)}>
+						<span class="dot" style:background={chipColor(t.color)}></span>
 						<span class="title">{t.name}</span>
 						<span class="muted">{t.entries}</span>
 					</a>
@@ -231,39 +207,8 @@
 {/if}
 
 <style>
-	:host {
-		display: block;
-	}
-	button,
-	input {
-		font: inherit;
-		font-size: max(1rem, 16px);
-		color: inherit;
-		min-height: 3rem;
-		padding: 0 1rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-		box-sizing: border-box;
-		min-width: 0;
-	}
-	button {
-		cursor: pointer;
-		touch-action: manipulation;
-	}
-	.primary {
-		border-color: var(--hc-accent, teal);
-		color: var(--hc-accent, teal);
-	}
-	.danger {
-		border-color: var(--hc-error, red);
-		color: var(--hc-error, red);
-	}
 	.new,
 	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
 		margin-bottom: 1rem;
 	}
 	.new input {
@@ -274,29 +219,46 @@
 		gap: 0.75rem;
 		margin-bottom: 1rem;
 	}
-	.colors {
+	.edit > label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	fieldset {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
+		margin: 0;
+		padding: 0;
+		border: none;
+	}
+	legend {
+		padding: 0;
+		margin-bottom: 0.25rem;
 	}
 	.swatch {
+		position: relative;
+		display: grid;
+		place-items: center;
 		width: 3rem;
-		padding: 0;
+		height: 3rem;
+		border-radius: 0.5rem;
 		background: var(--swatch);
 		border: 2px solid transparent;
+		cursor: pointer;
 	}
-	.swatch.chosen {
-		border-color: var(--hc-fg, currentColor);
-		outline: 2px solid var(--hc-bg, transparent);
+	.swatch input {
+		opacity: 0;
+		position: absolute;
+	}
+	.swatch:has(input:checked) {
+		border-color: var(--hc-fg);
+		outline: 2px solid var(--hc-bg);
 		outline-offset: -4px;
 	}
-	ul {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-	}
-	a {
-		color: var(--hc-accent, teal);
+	.swatch:has(input:focus-visible) {
+		outline: 2px solid var(--hc-accent);
+		outline-offset: 2px;
 	}
 	a.row {
 		display: flex;
@@ -305,7 +267,7 @@
 		min-height: 3rem;
 		color: inherit;
 		text-decoration: none;
-		border-bottom: 1px solid color-mix(in srgb, var(--hc-muted, gray) 30%, transparent);
+		border-bottom: 1px solid var(--hc-border);
 	}
 	.title {
 		flex: 1;
@@ -324,11 +286,5 @@
 		height: 0.85rem;
 		border-radius: 50%;
 		flex: none;
-	}
-	.muted {
-		color: var(--hc-muted, gray);
-	}
-	.error {
-		color: var(--hc-error, red);
 	}
 </style>
