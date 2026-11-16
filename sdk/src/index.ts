@@ -1,14 +1,9 @@
 // What the shell and every plugin frontend share. Requests carry the gate's
 // session cookie, same origin; there is no token in the page.
 
-export class HttpError extends Error {
-	constructor(
-		readonly status: number,
-		readonly body: string
-	) {
-		super(`HTTP ${status}: ${body}`);
-	}
-}
+import { ApiError, parseError, unreachable } from './errors.ts';
+
+export { ApiError, errorText } from './errors.ts';
 
 let reloading = false;
 
@@ -19,16 +14,26 @@ function signInAgain(): never {
 		reloading = true;
 		location.reload();
 	}
-	throw new HttpError(401, 'signing in again');
+	throw new ApiError(401, 'Signing in again…');
 }
 
+/** Throws `ApiError` for an error answer, and for no answer at all. */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-	const response = await fetch(path, {
-		...init,
-		headers: { accept: 'application/json', ...init.headers }
-	});
+	let response: Response;
+	try {
+		response = await fetch(path, {
+			...init,
+			headers: { accept: 'application/json', ...init.headers }
+		});
+	} catch (e) {
+		// fetch rejects with a TypeError when nothing answers; an abort stays an abort.
+		throw e instanceof TypeError ? unreachable(e) : e;
+	}
 	if (response.status === 401) signInAgain();
-	if (!response.ok) throw new HttpError(response.status, await response.text());
+	if (!response.ok) {
+		const text = await response.text().catch(() => '');
+		throw parseError(response.status, response.headers.get('content-type'), text);
+	}
 	if (response.status === 204) return undefined as T;
 	const text = await response.text();
 	return (text ? JSON.parse(text) : undefined) as T;

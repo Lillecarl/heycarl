@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, data, HttpError, json } from '@heycarl/sdk';
+	import { api, ApiError, data, errorText, json } from '@heycarl/sdk';
 
 	type Grant = {
 		id: number;
@@ -15,24 +15,12 @@
 	let grants = $state<Grant[] | null>(null);
 	let error = $state<string | null>(null);
 
-	// PostgREST and the kernel answer an error as JSON with a message.
-	function reason(e: unknown): string {
-		if (!(e instanceof HttpError)) return String(e);
-		try {
-			const body: unknown = JSON.parse(e.body);
-			if (body && typeof body === 'object' && 'message' in body) return String(body.message);
-		} catch {
-			// Not JSON: the status says enough.
-		}
-		return `HTTP ${e.status}`;
-	}
-
 	async function attempt(what: string, work: () => Promise<void>): Promise<void> {
 		error = null;
 		try {
 			await work();
 		} catch (e) {
-			error = `${what}: ${reason(e)}`;
+			error = `${what}: ${errorText(e)}`;
 		}
 	}
 
@@ -58,7 +46,7 @@
 				await api(`/api/oauth/grants/${grant.id}`, { method: 'DELETE' });
 			} catch (e) {
 				// Already gone is what was asked for.
-				if (!(e instanceof HttpError && e.status === 404)) throw e;
+				if (!(e instanceof ApiError && e.status === 404)) throw e;
 			}
 			await load();
 		});
