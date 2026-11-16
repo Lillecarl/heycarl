@@ -62,7 +62,7 @@ PEOPLE = [
 ids = {}
 for first, last, nick, company, job, favorite, touch in PEOPLE:
     [row] = call(
-        "crm/contact",
+        "prm/contact",
         {
             "first_name": first,
             "last_name": last,
@@ -76,7 +76,7 @@ for first, last, nick, company, job, favorite, touch in PEOPLE:
     ids[first] = row["id"]
 
 call(
-    "crm/contact?first_name=eq.Anna",
+    "prm/contact?first_name=eq.Anna",
     {"description": "Met at the climbing gym in 2019. Vegetarian, loves board games."},
     "PATCH",
 )
@@ -93,7 +93,7 @@ fields = [
 ]
 for who, kind, label, value in fields:
     call(
-        "crm/contact_field",
+        "prm/contact_field",
         {"contact_id": ids[who], "kind": kind, "label": label, "value": value},
     )
 
@@ -107,7 +107,7 @@ dates = [
 ]
 for who, kind, label, on, year in dates:
     call(
-        "crm/important_date",
+        "prm/important_date",
         {
             "contact_id": ids[who],
             "kind": kind,
@@ -125,16 +125,16 @@ relationships = [
     ("Anna", "Cecilia", "best friend"),
 ]
 for a, b, kind in relationships:
-    call("crm/relationship", {"contact_id": ids[a], "other_id": ids[b], "kind": kind})
+    call("prm/relationship", {"contact_id": ids[a], "other_id": ids[b], "kind": kind})
 
 for name, people in [
     ("family", ["Anna", "Björn", "Greta"]),
     ("work", ["Cecilia", "David"]),
     ("climbing", ["Anna", "Elin"]),
 ]:
-    [tag] = call("crm/tag", {"name": name})
+    [tag] = call("prm/tag", {"name": name})
     for who in people:
-        call("crm/contact_tag", {"contact_id": ids[who], "tag_id": tag["id"]})
+        call("prm/contact_tag", {"contact_id": ids[who], "tag_id": tag["id"]})
 
 activities = [
     (["Anna", "Björn"], "meal", "Dinner at their place", 4),
@@ -145,7 +145,7 @@ activities = [
 ]
 for people, kind, title, days in activities:
     call(
-        "crm/rpc/log_activity",
+        "prm/rpc/log_activity",
         {
             "contact_ids": [ids[p] for p in people],
             "title": title,
@@ -155,21 +155,21 @@ for people, kind, title, days in activities:
     )
 
 call(
-    "crm/note",
+    "prm/note",
     {
         "contact_id": ids["Anna"],
         "body": "Wants to try the new bouldering place in Hammarby.",
     },
 )
 call(
-    "crm/note",
+    "prm/note",
     {"contact_id": ids["Greta"], "body": "Hip surgery went well. Call on Sundays."},
 )
 call(
-    "crm/gift",
+    "prm/gift",
     {"contact_id": ids["Anna"], "title": "Wingspan expansion", "state": "idea"},
 )
-call("crm/gift", {"contact_id": ids["Greta"], "title": "Photo book", "state": "bought"})
+call("prm/gift", {"contact_id": ids["Greta"], "title": "Photo book", "state": "bought"})
 
 call("todos/todo", {"title": "Book a table for Anna's birthday"})
 call("todos/todo", {"title": "Renew passport"})

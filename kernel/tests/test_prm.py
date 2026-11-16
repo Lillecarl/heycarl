@@ -1,4 +1,4 @@
-"""The CRM plugin: PostgREST embedding, computed columns, RPC and reminders."""
+"""The PRM plugin: PostgREST embedding, computed columns, RPC and reminders."""
 
 from __future__ import annotations
 
@@ -44,42 +44,42 @@ async def call(
 
 async def contact(client: httpx.AsyncClient, user: str, first: str, last: str) -> int:
     rows = await call(
-        client, user, "POST", "crm/contact", {"first_name": first, "last_name": last}
+        client, user, "POST", "prm/contact", {"first_name": first, "last_name": last}
     )
     return int(rows[0]["id"])
 
 
 async def test_one_request_embeds_a_whole_contact(client: httpx.AsyncClient) -> None:
-    u = "crm-embed"
+    u = "prm-embed"
     anna = await contact(client, u, "Anna", "Svensson")
     bo = await contact(client, u, "Bo", "Svensson")
     await call(
         client,
         u,
         "POST",
-        "crm/contact_field",
+        "prm/contact_field",
         {"contact_id": anna, "kind": "email", "value": "anna@example.com"},
     )
     await call(
         client,
         u,
         "POST",
-        "crm/relationship",
+        "prm/relationship",
         {"contact_id": anna, "other_id": bo, "kind": "parent"},
     )
-    await call(client, u, "POST", "crm/note", {"contact_id": anna, "body": "Likes tea"})
+    await call(client, u, "POST", "prm/note", {"contact_id": anna, "body": "Likes tea"})
     tag = await call(
         client,
         u,
         "POST",
-        "crm/tag?on_conflict=owner_sub,name",
+        "prm/tag?on_conflict=owner_sub,name",
         {"name": "family"},
     )
     await call(
         client,
         u,
         "POST",
-        "crm/contact_tag",
+        "prm/contact_tag",
         {"contact_id": anna, "tag_id": tag[0]["id"]},
     )
     when = "2026-01-02T12:00:00+00:00"
@@ -87,7 +87,7 @@ async def test_one_request_embeds_a_whole_contact(client: httpx.AsyncClient) -> 
         client,
         u,
         "POST",
-        "crm/rpc/log_activity",
+        "prm/rpc/log_activity",
         {
             "contact_ids": [anna, bo],
             "title": "Dinner",
@@ -100,7 +100,7 @@ async def test_one_request_embeds_a_whole_contact(client: httpx.AsyncClient) -> 
         "*,last_contacted,contact_field(kind,value),relations(kind,other_first_name),"
         "tag(name),note(body),activity(title)"
     )
-    [row] = await call(client, u, "GET", f"crm/contact?id=eq.{anna}&select={select}")
+    [row] = await call(client, u, "GET", f"prm/contact?id=eq.{anna}&select={select}")
     assert row["contact_field"] == [{"kind": "email", "value": "anna@example.com"}]
     assert row["relations"] == [{"kind": "parent", "other_first_name": "Bo"}]
     assert row["tag"] == [{"name": "family"}]
@@ -109,12 +109,12 @@ async def test_one_request_embeds_a_whole_contact(client: httpx.AsyncClient) -> 
     assert datetime.fromisoformat(row["last_contacted"]) == datetime.fromisoformat(when)
 
     [other] = await call(
-        client, u, "GET", f"crm/contact?id=eq.{bo}&select=relations(kind)"
+        client, u, "GET", f"prm/contact?id=eq.{bo}&select=relations(kind)"
     )
     assert other["relations"] == [{"kind": "child"}]
 
     timeline = await call(
-        client, u, "GET", f"crm/timeline?contact_id=eq.{anna}&order=at.desc"
+        client, u, "GET", f"prm/timeline?contact_id=eq.{anna}&order=at.desc"
     )
     assert {t["kind"] for t in timeline} == {"note", "activity:meal"}
 
@@ -122,31 +122,31 @@ async def test_one_request_embeds_a_whole_contact(client: httpx.AsyncClient) -> 
 async def test_rows_point_only_at_the_owners_contacts(
     client: httpx.AsyncClient,
 ) -> None:
-    alice = await contact(client, "crm-alice", "Secret", "Person")
+    alice = await contact(client, "prm-alice", "Secret", "Person")
     r = await client.post(
-        "/api/data/crm/note",
+        "/api/data/prm/note",
         json={"contact_id": alice, "body": "planted"},
-        headers=as_user("crm-mallory"),
+        headers=as_user("prm-mallory"),
     )
     assert r.status_code == 409, r.text
-    assert await call(client, "crm-mallory", "GET", "crm/contact") == []
-    assert await call(client, "crm-mallory", "GET", "crm/relation") == []
+    assert await call(client, "prm-mallory", "GET", "prm/contact") == []
+    assert await call(client, "prm-mallory", "GET", "prm/relation") == []
 
 
 async def test_search_matches_fields_and_tags(client: httpx.AsyncClient) -> None:
-    u = "crm-search"
+    u = "prm-search"
     cid = await contact(client, u, "Cecilia", "Ek")
     await contact(client, u, "Dan", "Ek")
     await call(
         client,
         u,
         "POST",
-        "crm/contact_field",
+        "prm/contact_field",
         {"contact_id": cid, "kind": "phone", "value": "+46 70 123 45 67"},
     )
 
     async def names(q: str) -> list[str]:
-        rows = await call(client, u, "GET", f"crm/rpc/search?q={q}&select=first_name")
+        rows = await call(client, u, "GET", f"prm/rpc/search?q={q}&select=first_name")
         return [row["first_name"] for row in rows]
 
     assert await names("123") == ["Cecilia"]
@@ -167,12 +167,12 @@ async def reminders(client: httpx.AsyncClient, user: str) -> list[dict[str, Any]
 
 
 async def birthday(client: httpx.AsyncClient, user: str, cid: int, on: date) -> int:
-    await call(client, user, "POST", "crm/preference", {"timezone": ZONE})
+    await call(client, user, "POST", "prm/preference", {"timezone": ZONE})
     rows = await call(
         client,
         user,
         "POST",
-        "crm/important_date",
+        "prm/important_date",
         {
             "contact_id": cid,
             "kind": "birthday",
@@ -185,7 +185,7 @@ async def birthday(client: httpx.AsyncClient, user: str, cid: int, on: date) -> 
 
 
 async def test_a_birthday_keeps_a_reminder(client: httpx.AsyncClient) -> None:
-    u = "crm-birthday"
+    u = "prm-birthday"
     cid = await contact(client, u, "Eva", "Lind")
     on = tomorrow()
     did = await birthday(client, u, cid, on)
@@ -195,13 +195,13 @@ async def test_a_birthday_keeps_a_reminder(client: httpx.AsyncClient) -> None:
         on, time(9), OFFSET
     )
     assert rem["title"] == f"Eva Lind's birthday ({on.year - 1990})"
-    assert rem["url"] == f"/p/crm/heycarl-crm#/contact/{cid}"
+    assert rem["url"] == f"/p/prm/heycarl-prm#/contact/{cid}"
 
     upcoming = await call(
         client,
         u,
         "GET",
-        "crm/important_date?select=id,next_occurrence,days_until,turns"
+        "prm/important_date?select=id,next_occurrence,days_until,turns"
         "&days_until=lte.30&order=days_until",
     )
     assert upcoming == [
@@ -214,38 +214,38 @@ async def test_a_birthday_keeps_a_reminder(client: httpx.AsyncClient) -> None:
     ]
 
     await call(
-        client, u, "PATCH", f"crm/contact?id=eq.{cid}", {"first_name": "Evelina"}
+        client, u, "PATCH", f"prm/contact?id=eq.{cid}", {"first_name": "Evelina"}
     )
     [rem] = await reminders(client, u)
     assert rem["title"].startswith("Evelina Lind's")
 
-    await call(client, u, "PATCH", f"crm/important_date?id=eq.{did}", {"remind": False})
+    await call(client, u, "PATCH", f"prm/important_date?id=eq.{did}", {"remind": False})
     assert await reminders(client, u) == []
 
-    await call(client, u, "PATCH", f"crm/important_date?id=eq.{did}", {"remind": True})
+    await call(client, u, "PATCH", f"prm/important_date?id=eq.{did}", {"remind": True})
     [rem] = await reminders(client, u)
 
     # A reminder deleted by hand stays deleted for this occurrence.
     await call(client, u, "DELETE", f"reminders/reminder?id=eq.{rem['id']}")
     await call(
-        client, u, "PATCH", f"crm/important_date?id=eq.{did}", {"label": "big one"}
+        client, u, "PATCH", f"prm/important_date?id=eq.{did}", {"label": "big one"}
     )
     assert await reminders(client, u) == []
 
-    await call(client, u, "DELETE", f"crm/contact?id=eq.{cid}")
+    await call(client, u, "DELETE", f"prm/contact?id=eq.{cid}")
     assert await reminders(client, u) == []
 
 
 async def test_touch_due_counts_days_in_the_owners_zone(
     client: httpx.AsyncClient,
 ) -> None:
-    u = "crm-touch"
-    await call(client, u, "POST", "crm/preference", {"timezone": ZONE})
+    u = "prm-touch"
+    await call(client, u, "POST", "prm/preference", {"timezone": ZONE})
     [row] = await call(
         client,
         u,
         "POST",
-        "crm/contact",
+        "prm/contact",
         {"first_name": "Gus", "stay_in_touch_days": 7},
     )
     # 00:30 local is the evening before in UTC.
@@ -255,11 +255,11 @@ async def test_touch_due_counts_days_in_the_owners_zone(
         client,
         u,
         "POST",
-        "crm/rpc/log_activity",
+        "prm/rpc/log_activity",
         {"contact_ids": [row["id"]], "title": "Call", "happened_at": at.isoformat()},
     )
     [due] = await call(
-        client, u, "GET", f"crm/contact?id=eq.{row['id']}&select=touch_due"
+        client, u, "GET", f"prm/contact?id=eq.{row['id']}&select=touch_due"
     )
     assert due["touch_due"] == (local_day + timedelta(days=7)).isoformat()
 
@@ -267,7 +267,7 @@ async def test_touch_due_counts_days_in_the_owners_zone(
 async def test_a_passed_date_gets_next_years_reminder(
     client: httpx.AsyncClient, kernel: Kernel, config: Config
 ) -> None:
-    u = "crm-rollover"
+    u = "prm-rollover"
     cid = await contact(client, u, "Filip", "Berg")
     did = await birthday(client, u, cid, tomorrow())
     [rem] = await reminders(client, u)
@@ -279,17 +279,17 @@ async def test_a_passed_date_gets_next_years_reminder(
             (rem["id"],),
         )
         await conn.execute(
-            "update heycarl_plugin_crm.important_date"
+            "update heycarl_plugin_prm.important_date"
             " set reminded_for = reminded_for - interval '1 year' where id = %s",
             (did,),
         )
 
-    crm = importlib.import_module("heycarl_plugin_crm")
-    assert await crm.sync(kernel) >= 1
+    prm = importlib.import_module("heycarl_plugin_prm")
+    assert await prm.sync(kernel) >= 1
     sent, fresh = await reminders(client, u)
     assert (sent["state"], fresh["state"]) == ("sent", "pending")
     assert fresh["due_at"] == rem["due_at"]
-    assert await crm.sync(kernel) == 0
+    assert await prm.sync(kernel) == 0
 
 
 @pytest.mark.parametrize(
@@ -307,7 +307,7 @@ async def test_next_occurrence(
 ) -> None:
     async with await psycopg.AsyncConnection.connect(config.database) as conn:
         cur = await conn.execute(
-            "select heycarl_plugin_crm.next_on_or_after(%s, %s, %s)",
+            "select heycarl_plugin_prm.next_on_or_after(%s, %s, %s)",
             (month, day, since),
         )
         assert await cur.fetchone() == (expected,)

@@ -10,8 +10,12 @@ import psycopg
 import structlog
 from psycopg import sql
 
+from .plugins import SCHEMA_PREFIX
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from psycopg.rows import TupleRow
 
     from .plugins import Plugin
 
@@ -114,6 +118,144 @@ async def _run_scope(
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PluginRename:
+    """A plugin renamed after databases ran its migrations.
+
+    The migration files carry the new names; the applied ones were recorded
+    with the old. Only these two strings changed in any applied file, so
+    `backward` rebuilds the recorded text exactly and proves an edit was the
+    rename and nothing else.
+    """
+
+    old: str
+    new: str
+
+    @property
+    def pairs(self) -> tuple[tuple[str, str], ...]:
+        return (
+            (SCHEMA_PREFIX + self.old, SCHEMA_PREFIX + self.new),
+            (f"/p/{self.old}/heycarl-{self.old}", f"/p/{self.new}/heycarl-{self.new}"),
+        )
+
+    def forward(self, text: str) -> str:
+        for old, new in self.pairs:
+            text = text.replace(old, new)
+        return text
+
+    def backward(self, text: str) -> str:
+        for old, new in self.pairs:
+            text = text.replace(new, old)
+        return text
+
+
+RENAMES: Final = (PluginRename("crm", "prm"),)
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+async def _rename_plugin(
+    cur: psycopg.AsyncCursor[TupleRow],
+    rename: PluginRename,
+    available: dict[str, Sequence[Migration]],
+) -> None:
+    """Rename a plugin in place, once: its schema, code and stored text.
+
+    ALTER SCHEMA keeps every oid, so RLS, grants, history and links (all
+    keyed by regclass) follow without a step of their own.
+    """
+    (old_schema, new_schema), (old_url, new_url) = rename.pairs
+    await cur.execute(
+        "select to_regnamespace(%s) is not null, to_regnamespace(%s) is not null",
+        (old_schema, new_schema),
+    )
+    row = await cur.fetchone()
+    if row is None or not row[0]:
+        return
+    if row[1]:
+        raise MigrationError(f"both {old_schema} and {new_schema} exist")
+    log.info("plugin_rename", old=rename.old, new=rename.new)
+    await cur.execute(
+        sql.SQL("alter schema {} rename to {}").format(
+            sql.Identifier(old_schema), sql.Identifier(new_schema)
+        )
+    )
+    await cur.execute(
+        "update heycarl_private.migration set scope = %s where scope = %s",
+        ("plugin:" + rename.new, "plugin:" + rename.old),
+    )
+
+    # Function bodies and their SET search_path are text, not oids.
+    await cur.execute(
+        """
+        select pg_get_functiondef(p.oid)
+          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname like 'heycarl%%' and p.prokind in ('f', 'p')
+           and (p.prosrc like any (%(patterns)s)
+                or array_to_string(p.proconfig, ' ') like any (%(patterns)s))
+        """,
+        {"patterns": [f"%{old_schema}%", f"%{old_url}%"]},
+    )
+    for (definition,) in await cur.fetchall():
+        await cur.execute(rename.forward(definition).encode())
+
+    await cur.execute(
+        "update heycarl_private.tracked set route = replace(route, %s, %s)"
+        " where route like %s",
+        (old_url, new_url, f"%{old_url}%"),
+    )
+    await cur.execute(
+        "update heycarl_private.version set data = replace(data::text, %s, %s)::jsonb"
+        " where data::text like %s",
+        (old_url, new_url, f"%{old_url}%"),
+    )
+    # Stored page links, such as a reminder's url. Version triggers stay off:
+    # the rename is not a change the person made.
+    await cur.execute(
+        """
+        select c.table_schema, c.table_name, c.column_name
+          from information_schema.columns c
+          join information_schema.tables t using (table_schema, table_name)
+         where c.table_schema like 'heycarl\\_plugin\\_%'
+           and t.table_type = 'BASE TABLE' and c.data_type = 'text'
+        """
+    )
+    for schema, table, column in await cur.fetchall():
+        target = sql.Identifier(schema, table)
+        await cur.execute(
+            sql.SQL("select exists (select from {} where {} like %s)").format(
+                target, sql.Identifier(column)
+            ),
+            (f"%{old_url}%",),
+        )
+        found = await cur.fetchone()
+        if found is None or not found[0]:
+            continue
+        await cur.execute(sql.SQL("alter table {} disable trigger user").format(target))
+        await cur.execute(
+            sql.SQL(
+                "update {} set {col} = replace({col}, %s, %s) where {col} like %s"
+            ).format(target, col=sql.Identifier(column)),
+            (old_url, new_url, f"%{old_url}%"),
+        )
+        await cur.execute(sql.SQL("alter table {} enable trigger user").format(target))
+
+    await cur.execute("select scope, name, checksum from heycarl_private.migration")
+    recorded = await cur.fetchall()
+    for scope, name, checksum in recorded:
+        current = next((m for m in available.get(scope, ()) if m.name == name), None)
+        if current is None or current.checksum == checksum:
+            continue
+        if _sha256(rename.backward(current.text)) == checksum:
+            await cur.execute(
+                "update heycarl_private.migration set checksum = %s"
+                " where scope = %s and name = %s",
+                (current.checksum, scope, name),
+            )
+
+
 async def migrate(conninfo: str, plugins: Sequence[Plugin]) -> None:
     """Bring the database to this build, in one transaction.
 
@@ -132,12 +274,19 @@ async def migrate(conninfo: str, plugins: Sequence[Plugin]) -> None:
         )
         await cur.execute("select pg_advisory_xact_lock(%s)", (LOCK_KEY,))
         await cur.execute(BOOTSTRAP.encode())
-        await _run_scope(
-            cur, CORE_SCOPE, read_dir(CORE_SCOPE, base / "migrations"), None
-        )
+        available: dict[str, Sequence[Migration]] = {
+            CORE_SCOPE: read_dir(CORE_SCOPE, base / "migrations")
+        }
         for plugin in plugins:
-            directory = plugin.migrations_dir
-            if directory is None:
+            if plugin.migrations_dir is not None:
+                scope = "plugin:" + plugin.name
+                available[scope] = read_dir(scope, plugin.migrations_dir)
+        for rename in RENAMES:
+            await _rename_plugin(cur, rename, available)
+        await _run_scope(cur, CORE_SCOPE, available[CORE_SCOPE], None)
+        for plugin in plugins:
+            scope = "plugin:" + plugin.name
+            if scope not in available:
                 continue
             await cur.execute(
                 sql.SQL("create schema if not exists {}").format(
@@ -150,8 +299,7 @@ async def migrate(conninfo: str, plugins: Sequence[Plugin]) -> None:
                     sql.Identifier(plugin.schema)
                 )
             )
-            scope = "plugin:" + plugin.name
-            await _run_scope(cur, scope, read_dir(scope, directory), plugin.schema)
+            await _run_scope(cur, scope, available[scope], plugin.schema)
         await cur.execute(
             sql.SQL("drop schema if exists {} cascade").format(
                 sql.Identifier(API_SCHEMA)

@@ -17,7 +17,7 @@ from mcp.types import ToolAnnotations
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
-SCOPE: Final = "crm"
+SCOPE: Final = "prm"
 READ: Final = ToolAnnotations(readOnlyHint=True)
 WRITE: Final = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 SUMMARY: Final = (
@@ -47,7 +47,7 @@ DETAIL_ORDER: Final = [
 ActivityKind = Literal["call", "message", "meeting", "meal", "visit", "other"]
 FieldKind = Literal["email", "phone", "address", "website", "social", "other"]
 DateKind = Literal["birthday", "anniversary", "memorial", "other"]
-# The rows of relationship_kind (migrations/0001_crm.sql); a kind added there
+# The rows of relationship_kind (migrations/0001_prm.sql); a kind added there
 # needs adding here, or the tool refuses it before the database could.
 RelationKind = Literal[
     "partner", "spouse", "ex-partner", "parent", "child", "sibling",

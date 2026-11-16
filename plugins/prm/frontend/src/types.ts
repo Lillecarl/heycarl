@@ -1,6 +1,6 @@
-// Rows as PostgREST returns them from schema heycarl_plugin_crm.
+// Rows as PostgREST returns them from schema heycarl_plugin_prm.
 
-export const SCOPE = 'crm';
+export const SCOPE = 'prm';
 
 export interface Contact {
 	id: number;

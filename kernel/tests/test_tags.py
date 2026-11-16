@@ -37,7 +37,7 @@ async def test_tagging_makes_the_tag_once_and_filters_by_table(
     me = as_user("tag-app")
     [milk] = await call(client, me, "POST", "todos/todo", {"title": "Milk"})
     [eggs] = await call(client, me, "POST", "todos/todo", {"title": "Eggs"})
-    [anna] = await call(client, me, "POST", "crm/contact", {"first_name": "Anna"})
+    [anna] = await call(client, me, "POST", "prm/contact", {"first_name": "Anna"})
 
     first = await tag(client, me, milk["id"], "Shopping", color="base0B")
     again = await tag(client, me, eggs["id"], "shopping", color="base08")
@@ -47,7 +47,7 @@ async def test_tagging_makes_the_tag_once_and_filters_by_table(
     assert twice["link_id"] == first["link_id"]
     await call(
         client, me, "POST", "tags/rpc/tag_entry",
-        {"of_scope": "crm", "of_table": "contact", "of_key": {"id": anna["id"]}, "name": "Shopping"},
+        {"of_scope": "prm", "of_table": "contact", "of_key": {"id": anna["id"]}, "name": "Shopping"},
     )
 
     [summary] = await call(client, me, "GET", "tags/tag_summary")

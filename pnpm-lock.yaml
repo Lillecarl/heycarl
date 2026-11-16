@@ -80,7 +80,7 @@ importers:
         specifier: ^8.3.4
         version: 8.3.8
 
-  plugins/crm/frontend:
+  plugins/prm/frontend:
     dependencies:
       '@heycarl/sdk':
         specifier: workspace:*

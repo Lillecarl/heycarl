@@ -271,7 +271,7 @@
 									<p>
 										With
 										{#each people as p, i (p.contact_id)}{i ? ', ' : ''}<a
-												href="/p/crm/heycarl-crm#/contact/{p.contact_id}"
+												href="/p/prm/heycarl-prm#/contact/{p.contact_id}"
 												>{p.first_name} {p.last_name}</a
 											>{/each}
 									</p>

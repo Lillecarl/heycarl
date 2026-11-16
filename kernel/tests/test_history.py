@@ -183,15 +183,15 @@ async def test_restoring_a_delete_that_was_undone_is_a_conflict(
     assert r.status_code == 409, r.text
 
 
-CRM_TABLES = (
+PRM_TABLES = (
     "contact", "contact_field", "relationship", "note", "activity",
     "activity_contact", "tag", "contact_tag", "gift", "important_date",
 )
 
 
 async def graph(sub: str) -> dict[str, list[Any]]:
-    """Every row the person owns in the CRM, reminders and todos."""
-    tables = [f"heycarl_plugin_crm.{t}" for t in CRM_TABLES] + [
+    """Every row the person owns in the PRM, reminders and todos."""
+    tables = [f"heycarl_plugin_prm.{t}" for t in PRM_TABLES] + [
         "heycarl_plugin_reminders.reminder",
         "heycarl_plugin_todos.todo",
     ]
@@ -213,21 +213,21 @@ async def test_a_hostile_client_destroys_nothing(
 ) -> None:
     sub = "hist-victim"
     me = as_user(sub)
-    anna = (await call(client, me, "POST", "crm/contact", {"first_name": "Anna"}))[0]["id"]
-    bo = (await call(client, me, "POST", "crm/contact", {"first_name": "Bo"}))[0]["id"]
+    anna = (await call(client, me, "POST", "prm/contact", {"first_name": "Anna"}))[0]["id"]
+    bo = (await call(client, me, "POST", "prm/contact", {"first_name": "Bo"}))[0]["id"]
     for path, body in [
-        ("crm/contact_field", {"contact_id": anna, "kind": "email", "value": "a@x.se"}),
-        ("crm/note", {"contact_id": anna, "body": "Likes tea."}),
-        ("crm/gift", {"contact_id": anna, "title": "Tea"}),
-        ("crm/relationship", {"contact_id": anna, "other_id": bo, "kind": "sibling"}),
-        ("crm/important_date", {"contact_id": anna, "month": 3, "day": 14}),
+        ("prm/contact_field", {"contact_id": anna, "kind": "email", "value": "a@x.se"}),
+        ("prm/note", {"contact_id": anna, "body": "Likes tea."}),
+        ("prm/gift", {"contact_id": anna, "title": "Tea"}),
+        ("prm/relationship", {"contact_id": anna, "other_id": bo, "kind": "sibling"}),
+        ("prm/important_date", {"contact_id": anna, "month": 3, "day": 14}),
         ("todos/todo", {"title": "Buy tea"}),
     ]:
         await call(client, me, "POST", path, body)
-    tag = (await call(client, me, "POST", "crm/tag", {"name": "family"}))[0]["id"]
-    await call(client, me, "POST", "crm/contact_tag", {"contact_id": anna, "tag_id": tag})
+    tag = (await call(client, me, "POST", "prm/tag", {"name": "family"}))[0]["id"]
+    await call(client, me, "POST", "prm/contact_tag", {"contact_id": anna, "tag_id": tag})
     activity = (
-        await call(client, me, "POST", "crm/rpc/log_activity",
+        await call(client, me, "POST", "prm/rpc/log_activity",
                    {"contact_ids": [anna, bo], "title": "Lunch"})
     )["id"]
     before = await graph(sub)
@@ -238,7 +238,7 @@ async def test_a_hostile_client_destroys_nothing(
         assert not {n for n in names if "purge" in n or "empty" in n}
         await tool(session, "people_delete", person_id=anna)
         for path, row in [("activity", activity), ("tag", tag)]:
-            await tool(session, "data_write", scope="crm", method="DELETE",
+            await tool(session, "data_write", scope="prm", method="DELETE",
                        path=path, query={"id": f"eq.{row}"})
         await tool(session, "data_write", scope="todos", method="DELETE",
                    path="todo", query={"title": "eq.Buy tea"})

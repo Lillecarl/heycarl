@@ -4,7 +4,7 @@
 alter table heycarl_private.tracked add column route text;
 
 -- For plugin migrations: where the app shows one entry, with {column}
--- for each key column, e.g. '/p/crm/heycarl-crm#/contact/{id}'.
+-- for each key column, e.g. '/p/prm/heycarl-prm#/contact/{id}'.
 create function heycarl_sdk.entry_route(tbl regclass, route text) returns void
   language sql
   set search_path = pg_catalog, pg_temp

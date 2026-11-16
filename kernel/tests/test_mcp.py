@@ -452,7 +452,7 @@ async def test_generic_data_tools(served: Plain) -> None:
         served, sub="hank-sub", elicitation=answering(True, asked)
     ) as session:
         scopes = await tool(session, "data_scopes")
-        assert set(scopes) == {"crm", "todos", "reminders", "counters", "calendar", "tags"}
+        assert set(scopes) == {"prm", "todos", "reminders", "counters", "calendar", "tags"}
         # The core scope holds push subscriptions; MCP never reaches it.
         assert "no data scope" in await failure(
             session, "data_read", scope="core", path="push_subscription"
@@ -465,7 +465,7 @@ async def test_generic_data_tools(served: Plain) -> None:
             path="push_subscription",
             body={"endpoint": "https://evil.example/", "p256dh": "x", "auth": "y"},
         )
-        schema = await tool(session, "data_schema", scope="crm")
+        schema = await tool(session, "data_schema", scope="prm")
         assert "first_name" in schema["tables"]["contact"]
         assert "search" in schema["functions"]
         [row] = await tool(
@@ -826,7 +826,7 @@ async def test_resources_list_read_and_stay_private(served: Plain) -> None:
         assert [t["title"] for t in (await read("heycarl://todos"))["todos"]] == [
             "Buy milk"
         ]
-        assert "contact" in (await read("heycarl://schema/crm"))["tables"]
+        assert "contact" in (await read("heycarl://schema/prm"))["tables"]
         assert "get_in_touch" in await read("heycarl://people/upcoming")
     async with connected(served, sub="kim-sub") as session:
         assert (await session.read_resource("heycarl://people")).contents
@@ -888,4 +888,11 @@ async def test_prompts_embed_records_and_complete_names(served: Plain) -> None:
             ),
             {"name": "scope", "value": "c"},
         )
-        assert sorted(scopes.completion.values) == ["calendar", "counters", "crm"]
+        assert sorted(scopes.completion.values) == ["calendar", "counters"]
+        scopes = await session.complete(
+            types.ResourceTemplateReference(
+                type="ref/resource", uri="heycarl://schema/{scope}"
+            ),
+            {"name": "scope", "value": "p"},
+        )
+        assert scopes.completion.values == ["prm"]

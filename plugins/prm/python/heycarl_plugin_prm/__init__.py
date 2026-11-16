@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
-SCOPE: Final = "crm"
+SCOPE: Final = "prm"
 # A reminder fires on its day; the next one only has to exist before next year.
 SYNC_SECONDS: Final = 3600.0
 
@@ -36,10 +36,10 @@ async def sync_forever(kernel: Kernel) -> None:
         try:
             moved = await sync(kernel)
             if moved:
-                log.info("crm_reminders_moved", count=moved)
+                log.info("prm_reminders_moved", count=moved)
         except Exception:
             # A database or PostgREST outage must not end the job for good.
-            log.exception("crm_sync_failed")
+            log.exception("prm_sync_failed")
         await anyio.sleep(SYNC_SECONDS)
 
 

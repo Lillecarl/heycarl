@@ -2,7 +2,7 @@
 -- activity logged at local midnight east of Greenwich fell on the day before.
 create or replace function touch_due(c contact) returns date
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     select ((coalesce(last_contacted(c), c.created_at) at time zone owner_zone(c.owner_sub))
             + make_interval(days => c.stay_in_touch_days))::date

@@ -370,8 +370,8 @@
 		</p>
 	{/if}
 	<form class="row" onsubmit={addTag}>
-		<input class="grow" list="crm-tags" placeholder="Add a tag" bind:value={tagName} maxlength="50" />
-		<datalist id="crm-tags">
+		<input class="grow" list="prm-tags" placeholder="Add a tag" bind:value={tagName} maxlength="50" />
+		<datalist id="prm-tags">
 			{#each allTags as t (t.id)}<option value={t.name}></option>{/each}
 		</datalist>
 	</form>

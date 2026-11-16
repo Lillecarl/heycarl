@@ -239,7 +239,7 @@ create policy own on preference to heycarl_user
 create policy own on important_date to heycarl_user
   using (owner_sub = heycarl_sdk.sub()) with check (owner_sub = heycarl_sdk.sub());
 
-grant usage on schema heycarl_plugin_crm to heycarl_user, heycarl_worker;
+grant usage on schema heycarl_plugin_prm to heycarl_user, heycarl_worker;
 grant usage on type field_kind, activity_kind, gift_state, date_kind to heycarl_user;
 
 grant select, delete on contact to heycarl_user;
@@ -285,7 +285,7 @@ grant insert (contact_id, kind, label, month, day, year, remind),
 
 create function last_contacted(c contact) returns timestamptz
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     select max(a.happened_at)
       from activity a
@@ -296,7 +296,7 @@ create function last_contacted(c contact) returns timestamptz
 -- When to get in touch next, for a contact with stay_in_touch_days.
 create function touch_due(c contact) returns date
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     select (coalesce(last_contacted(c), c.created_at)
             + make_interval(days => c.stay_in_touch_days))::date
@@ -305,7 +305,7 @@ create function touch_due(c contact) returns date
 
 create function owner_zone(owner text) returns text
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$ select coalesce((select timezone from preference where owner_sub = owner), 'UTC') $$;
 
 -- 29 February falls on the 28th in a common year.
@@ -321,7 +321,7 @@ create function occurrence(m integer, d integer, y integer) returns date
 
 create function next_on_or_after(m integer, d integer, since date) returns date
   language sql immutable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     select case
       when occurrence(m, d, extract(year from since)::integer) >= since
@@ -333,14 +333,14 @@ create function next_on_or_after(m integer, d integer, since date) returns date
 -- Today or later, in the owner's zone.
 create function next_occurrence(d important_date) returns date
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     select next_on_or_after(d.month, d.day, (now() at time zone owner_zone(d.owner_sub))::date)
   $$;
 
 create function days_until(d important_date) returns integer
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     select next_occurrence(d) - (now() at time zone owner_zone(d.owner_sub))::date
   $$;
@@ -348,13 +348,13 @@ create function days_until(d important_date) returns integer
 -- The age or the anniversary count at the next occurrence; null without a year.
 create function turns(d important_date) returns integer
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$ select extract(year from next_occurrence(d))::integer - d.year $$;
 
 -- A computed relationship: `contact?select=*,relations(*)`.
 create function relations(c contact) returns setof relation
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$ select * from relation where contact_id = c.id $$;
 
 -- One contact's history, newest first through `order=at.desc`.
@@ -375,7 +375,7 @@ grant select on timeline to heycarl_user;
 
 create function search(q text) returns setof contact
   language sql stable
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
     with p as (
       select '%' || replace(replace(replace(q, '\', '\\'), '%', '\%'), '_', '\_') || '%' as pattern
@@ -401,7 +401,7 @@ create function log_activity(
   happened_at timestamptz default now()
 ) returns activity
   language plpgsql volatile
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
 declare
   created activity;
@@ -425,7 +425,7 @@ $$;
 -- created a reminder or moved one to a new occurrence.
 create function sync_date(d important_date) returns boolean
   language plpgsql volatile security definer
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
 declare
   occ date;
@@ -475,7 +475,7 @@ begin
   returning r.id into rid;
   if rid is null then
     insert into heycarl_plugin_reminders.reminder (owner_sub, title, body, due_at, url)
-    values (d.owner_sub, heading, detail, due, '/p/crm/heycarl-crm#/contact/' || d.contact_id)
+    values (d.owner_sub, heading, detail, due, '/p/prm/heycarl-prm#/contact/' || d.contact_id)
     returning id into rid;
   end if;
   update important_date set reminder_id = rid, reminded_for = occ where id = d.id;
@@ -486,7 +486,7 @@ revoke execute on function sync_date from public;
 
 create function important_date_changed() returns trigger
   language plpgsql security definer
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
 begin
   if tg_op = 'DELETE' then
@@ -507,7 +507,7 @@ create trigger sync_reminder
 
 create function contact_renamed() returns trigger
   language plpgsql security definer
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
 begin
   perform sync_date(d) from important_date d where d.contact_id = new.id;
@@ -520,7 +520,7 @@ create trigger sync_reminders
 
 create function preference_changed() returns trigger
   language plpgsql security definer
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$
 begin
   if tg_op = 'INSERT' or (old.timezone, old.remind_time) is distinct from (new.timezone, new.remind_time) then
@@ -536,7 +536,7 @@ create trigger sync_reminders
 -- Called by the kernel job: a date that has passed gets next year's reminder.
 create function sync_reminders() returns integer
   language sql volatile security definer
-  set search_path = heycarl_plugin_crm, pg_temp
+  set search_path = heycarl_plugin_prm, pg_temp
   as $$ select count(*)::integer from important_date d where d.remind and sync_date(d) $$;
 revoke execute on function sync_reminders from public;
 grant execute on function sync_reminders to heycarl_worker;

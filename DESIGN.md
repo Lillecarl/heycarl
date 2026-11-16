@@ -1,7 +1,7 @@
 # Hey Carl
 
 A personal application framework at `https://hey.lillecarl.com`. One kernel,
-and features as plugins: contacts (a Monica-style CRM), calendar sync,
+and features as plugins: contacts (a Monica-style PRM, a personal relationship manager), calendar sync,
 reminders, todos, and more later. It installs as a PWA on Android.
 
 The patterns follow Torg (solid-kubernetes `pkgs/torg`): PostgreSQL holds the
@@ -130,7 +130,7 @@ narrow by intent.
 2. **reminders**: a reminder on any object. Delivery by web push. A phone
    call through 46elks is planned; how 46elks speaks text is not yet
    checked.
-3. **crm**: Monica's model: people, contact fields, relationships, notes,
+3. **prm**, the personal relationship manager: Monica's model: people, contact fields, relationships, notes,
    activities, tags, gifts and important dates. See below.
 4. **calendar**: Google Calendar, read-only. See below. Planned later:
    Google Workspace (work) and CalDAV/ICS, and mirroring events between
@@ -146,7 +146,7 @@ with a nonzero delta, a note and a time, so the history is the data.
 - Set and reset add one event with the difference. Undo deletes the
   newest event (the highest id), and the trash keeps it.
 - Tenancy: an event references `(counter_id, owner_sub)`, as in the
-  CRM. An event can only count on the caller's own counter.
+  PRM. An event can only count on the caller's own counter.
 - Events have no update grant. A wrong event is undone, not edited.
 - Sums are SQL: the `counter_value` view, and `daily_totals` and
   `count_since`, which are stable and so answer GET. A read-only MCP
@@ -230,9 +230,9 @@ for a write scope.
   The migration drops its version trigger at once. Google owns these
   rows, so they have no history and no trash, and `restore` and `undo`
   can never write into the cache.
-- CRM: `event_people(event_id)` returns the contacts whose email field
+- PRM: `event_people(event_id)` returns the contacts whose email field
   matches an attendee, compared in lowercase, as the caller under RLS.
-  Without the CRM plugin it returns nothing.
+  Without the PRM plugin it returns nothing.
 - MCP: `calendar_upcoming`, `calendar_events`, `calendar_event` (with
   its people) and `calendar_calendars` are read-only. `calendar_sync`
   needs `write`: it changes nothing at Google, but it spends quota. The
@@ -254,7 +254,7 @@ Accepted:
 - The kernel's worker token can read every sealed token, so the key is
   what protects them.
 
-## The CRM
+## The PRM
 
 The schema is the application. The page is a thin view over PostgREST, and
 the only Python is one job.
@@ -519,15 +519,15 @@ Decided:
   both ends are live and the caller's.
 - An entry's label is a guess from its columns: a name, a title, a body.
   A plugin may name a route for a table, with
-  `heycarl_sdk.entry_route('contact', '/p/crm/heycarl-crm#/contact/{id}')`;
-  the reminders the CRM makes carry such URLs already. The panel links an
+  `heycarl_sdk.entry_route('contact', '/p/prm/heycarl-prm#/contact/{id}')`;
+  the reminders the PRM makes carry such URLs already. The panel links an
   entry there, or to the plugin's page when it names none.
 - MCP: `entries_search`, `links_list`, `link`, `unlink`. Unlink asks no
   confirmation: undo brings a link back.
 - The UI: a Svelte component in the SDK, `Related.svelte`, that each
   plugin page embeds under an entry. It lists the links, adds one through
   the picker, and removes one.
-- How two people are related stays in the CRM (`relationship`, with kinds
+- How two people are related stays in the PRM (`relationship`, with kinds
   such as parent and child, each with its reverse). MCP gets
   `people_relate` and `people_unrelate` for it. A generic link between
   two people says only that they are linked, with a label.

@@ -200,9 +200,9 @@ def cookie_header(jar: dict[str, str]) -> dict[str, str]:
 
 @needs_database
 async def test_sign_in_makes_a_session(client: httpx.AsyncClient) -> None:
-    answer, jar = await sign_in(client, "/p/crm/heycarl-crm")
+    answer, jar = await sign_in(client, "/p/prm/heycarl-prm")
     assert answer.status_code == 303, answer.text
-    assert answer.headers["location"] == "/p/crm/heycarl-crm"
+    assert answer.headers["location"] == "/p/prm/heycarl-prm"
     line = next(
         c
         for c in answer.headers.get_list("set-cookie")
@@ -281,10 +281,10 @@ async def test_logout_ends_the_session(client: httpx.AsyncClient) -> None:
 @needs_database
 async def test_deny_by_default(client: httpx.AsyncClient) -> None:
     assert (await client.get("/api/me")).status_code == 401
-    page = await client.get("/p/crm/heycarl-crm?x=1")
+    page = await client.get("/p/prm/heycarl-prm?x=1")
     assert page.status_code == 302
     assert (
-        page.headers["location"] == "/auth/login?next=%2Fp%2Fcrm%2Fheycarl-crm%3Fx%3D1"
+        page.headers["location"] == "/auth/login?next=%2Fp%2Fprm%2Fheycarl-prm%3Fx%3D1"
     )
     assert (await client.get("/healthz")).status_code == 200
     # A header naming a person is just a header.

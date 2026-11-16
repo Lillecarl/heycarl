@@ -410,16 +410,16 @@ async def test_disconnect_revokes_and_forgets(
 
 
 async def test_people_at_an_event(client: httpx.AsyncClient, fake: Fake) -> None:
-    me = as_user("cal-crm")
+    me = as_user("cal-prm")
     write = {**me, "prefer": "return=representation"}
     [anna] = await ok(
-        client, write, "POST", "/api/data/crm/contact", {"first_name": "Anna"}
+        client, write, "POST", "/api/data/prm/contact", {"first_name": "Anna"}
     )
     await ok(
         client,
         write,
         "POST",
-        "/api/data/crm/contact_field",
+        "/api/data/prm/contact_field",
         {"contact_id": anna["id"], "kind": "email", "value": "ANNA@example.com"},
     )
     await connect(client, me)
@@ -432,7 +432,7 @@ async def test_people_at_an_event(client: httpx.AsyncClient, fake: Fake) -> None
         (anna["id"], "anna@example.com")
     ]
     # Someone else's contacts never match.
-    other = as_user("cal-crm-other")
+    other = as_user("cal-prm-other")
     assert (
         await ok(
             client, other, "GET", f"{DATA}/rpc/event_people?event_id={standup['id']}"

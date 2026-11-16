@@ -18,7 +18,7 @@ let
   pluginNames = [
     "todos"
     "reminders"
-    "crm"
+    "prm"
     "counters"
     "calendar"
     "tags"

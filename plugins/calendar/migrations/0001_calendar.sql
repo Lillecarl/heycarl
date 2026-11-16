@@ -129,15 +129,15 @@ create function event_people(event_id bigint)
   as $$
 #variable_conflict use_column
 begin
-  if to_regclass('heycarl_plugin_crm.contact_field') is null then
+  if to_regclass('heycarl_plugin_prm.contact_field') is null then
     return;
   end if;
   return query
     select distinct c.id, c.first_name, c.last_name, lower(f.value)
       from event e
-      join heycarl_plugin_crm.contact_field f
+      join heycarl_plugin_prm.contact_field f
         on f.kind = 'email' and lower(f.value) = any (e.attendees)
-      join heycarl_plugin_crm.contact c on c.id = f.contact_id
+      join heycarl_plugin_prm.contact c on c.id = f.contact_id
      where e.id = event_people.event_id
      order by c.first_name, c.last_name, c.id;
 end

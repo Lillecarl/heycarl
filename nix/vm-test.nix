@@ -186,7 +186,7 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(curl(f"{as_alice} http://hey/api/plugins"))
-        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "crm", "reminders", "tags", "todos"], plugins
+        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "prm", "reminders", "tags", "todos"], plugins
         for p in plugins:
             curl(f"-f {as_alice} 'http://hey{p['frontend']['module']}' -o /dev/null")
 
@@ -345,14 +345,14 @@ testers.runNixOSTest {
         assert status(f"{as_alice} -X DELETE 'http://hey/api/data/core/app_password?id=eq.{made['username']}'") == "204"
         assert status(f"{basic} -X PROPFIND http://hey/dav/") == "401"
 
-    with subtest("a birthday in the CRM makes a reminder"):
+    with subtest("a birthday in the PRM makes a reminder"):
         post = f"{as_alice} -H 'content-type: application/json' -H 'prefer: return=representation'"
         [anna] = json.loads(
-            curl(f"{post} -d '{{\"first_name\": \"Anna\"}}' http://hey/api/data/crm/contact")
+            curl(f"{post} -d '{{\"first_name\": \"Anna\"}}' http://hey/api/data/prm/contact")
         )
         curl(
             f"-f {post} -d '{{\"contact_id\": {anna['id']}, \"month\": 3, \"day\": 14}}' "
-            "http://hey/api/data/crm/important_date"
+            "http://hey/api/data/prm/important_date"
         )
         [rem] = json.loads(curl(f"{as_alice} http://hey/api/data/reminders/reminder"))
         assert rem["title"] == "Anna's birthday", rem

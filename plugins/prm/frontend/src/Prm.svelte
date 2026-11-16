@@ -1,4 +1,4 @@
-<svelte:options customElement="heycarl-crm" />
+<svelte:options customElement="heycarl-prm" />
 
 <script lang="ts">
 	import { onMount } from 'svelte';
@@ -29,7 +29,7 @@
 	}
 
 	onMount(() => {
-		syncZone().catch((e) => console.warn('crm: time zone not saved', e));
+		syncZone().catch((e) => console.warn('prm: time zone not saved', e));
 		const onHash = (): void => {
 			open = parse(location.hash);
 			window.scrollTo(0, 0);
@@ -39,7 +39,7 @@
 	});
 </script>
 
-<div class="crm">
+<div class="prm">
 	{#if open === null}
 		<ContactList />
 	{:else}
@@ -52,18 +52,18 @@
 <style>
 	/* Every component's styles live here: the children render inside this
 	   element's shadow root, and :global reaches them there. */
-	.crm {
+	.prm {
 		max-width: 48rem;
 		margin: 0 auto;
 	}
-	.crm :global(a) {
+	.prm :global(a) {
 		color: var(--hc-accent, teal);
 		text-decoration: none;
 	}
-	.crm :global(input),
-	.crm :global(select),
-	.crm :global(textarea),
-	.crm :global(button) {
+	.prm :global(input),
+	.prm :global(select),
+	.prm :global(textarea),
+	.prm :global(button) {
 		font: inherit;
 		color: inherit;
 		background: transparent;
@@ -71,82 +71,82 @@
 		border-radius: 0.25rem;
 		padding: 0.4rem 0.5rem;
 	}
-	.crm :global(button) {
+	.prm :global(button) {
 		cursor: pointer;
 	}
-	.crm :global(textarea) {
+	.prm :global(textarea) {
 		width: 100%;
 		box-sizing: border-box;
 		min-height: 4rem;
 	}
-	.crm :global(form.row) {
+	.prm :global(form.row) {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		margin: 0.5rem 0;
 	}
-	.crm :global(form.row .grow) {
+	.prm :global(form.row .grow) {
 		flex: 1 1 10rem;
 		min-width: 0;
 	}
-	.crm :global(.row),
-	.crm :global(.row-head) {
+	.prm :global(.row),
+	.prm :global(.row-head) {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.75rem;
 	}
-	.crm :global(h1) {
+	.prm :global(h1) {
 		font-size: 1.5rem;
 		margin: 0;
 	}
-	.crm :global(section) {
+	.prm :global(section) {
 		margin: 1.5rem 0;
 	}
-	.crm :global(h2) {
+	.prm :global(h2) {
 		font-size: 1rem;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--hc-muted, gray);
 		margin: 0 0 0.5rem;
 	}
-	.crm :global(ul + h2) {
+	.prm :global(ul + h2) {
 		margin-top: 1.5rem;
 	}
-	.crm :global(dd input:not([type='number'])) {
+	.prm :global(dd input:not([type='number'])) {
 		width: 100%;
 		box-sizing: border-box;
 	}
-	.crm :global(ul.plain) {
+	.prm :global(ul.plain) {
 		list-style: none;
 		padding: 0;
 		margin: 0;
 	}
-	.crm :global(ul.plain > li) {
+	.prm :global(ul.plain > li) {
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
 		padding: 0.4rem 0;
 	}
-	.crm :global(.grow) {
+	.prm :global(.grow) {
 		flex: 1;
 		min-width: 0;
 	}
-	.crm :global(.muted) {
+	.prm :global(.muted) {
 		color: var(--hc-muted, gray);
 		font-size: 0.9em;
 	}
-	.crm :global(.error) {
+	.prm :global(.error) {
 		color: var(--hc-error, red);
 	}
-	.crm :global(.icon) {
+	.prm :global(.icon) {
 		border: none;
 		background: none;
 		padding: 0 0.25rem;
 		font-size: 1.2rem;
 		line-height: 1;
 	}
-	.crm :global(.avatar) {
+	.prm :global(.avatar) {
 		flex: none;
 		display: grid;
 		place-items: center;
@@ -156,12 +156,12 @@
 		font-weight: 600;
 		color: var(--hc-base00);
 	}
-	.crm :global(.avatar.big) {
+	.prm :global(.avatar.big) {
 		width: 4rem;
 		height: 4rem;
 		font-size: 1.5rem;
 	}
-	.crm :global(.chip) {
+	.prm :global(.chip) {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.25rem;
@@ -171,25 +171,25 @@
 		margin: 0 0.25rem 0.25rem 0;
 		font-size: 0.9em;
 	}
-	.crm :global(.timeline li) {
+	.prm :global(.timeline li) {
 		align-items: flex-start;
 		border-left: 2px solid var(--hc-muted, gray);
 		padding-left: 0.75rem;
 	}
-	.crm :global(.pre) {
+	.prm :global(.pre) {
 		white-space: pre-wrap;
 		margin: 0.25rem 0 0;
 	}
-	.crm :global(dl) {
+	.prm :global(dl) {
 		display: grid;
 		grid-template-columns: max-content 1fr;
 		gap: 0.5rem 1rem;
 		align-items: center;
 	}
-	.crm :global(dt) {
+	.prm :global(dt) {
 		color: var(--hc-muted, gray);
 	}
-	.crm :global(dd) {
+	.prm :global(dd) {
 		margin: 0;
 	}
 </style>
