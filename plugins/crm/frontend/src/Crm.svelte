@@ -154,7 +154,7 @@
 		height: 2.25rem;
 		border-radius: 50%;
 		font-weight: 600;
-		color: #1d2021;
+		color: var(--hc-base00);
 	}
 	.crm :global(.avatar.big) {
 		width: 4rem;

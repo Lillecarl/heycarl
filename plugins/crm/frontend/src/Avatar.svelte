@@ -7,8 +7,8 @@
 	const initials = $derived(
 		(contact.first_name.slice(0, 1) + contact.last_name.slice(0, 1)).toUpperCase()
 	);
-	// A stable colour per contact, from the gruvbox bright palette.
-	const PALETTE = ['#fb4934', '#b8bb26', '#fabd2f', '#83a598', '#d3869b', '#8ec07c', '#fe8019'];
+	// A stable colour per contact, from the theme's base16 accent roles.
+	const PALETTE = ['08', '0B', '0A', '0D', '0E', '0C', '09'].map((n) => `var(--hc-base${n})`);
 	const colour = $derived(PALETTE[contact.id % PALETTE.length]);
 </script>
 
