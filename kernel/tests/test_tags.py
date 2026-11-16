@@ -190,3 +190,25 @@ async def test_tags_through_mcp(served: Plain) -> None:
         assert await tool(session, "tags_delete", tag_id=tid) == "deleted"
         assert "Shop" in asked[-1]
         assert await tool(session, "tags_list") == []
+
+
+async def test_todos_filter_by_tag_within_a_list(served: Plain) -> None:
+    async with connected(served, sub="tag-todos") as session:
+        shop = await tool(session, "todos_list_add", name="Shopping")
+        milk = await tool(session, "todos_add", title="Milk", list="Shopping", tag="dairy")
+        await tool(session, "todos_add", title="Bread", list="Shopping")
+        cheese = await tool(session, "todos_add", title="Cheese", parent_id=milk["id"], tag="Dairy")
+        elsewhere = await tool(session, "todos_add", title="Yoghurt", tag="dairy")
+
+        dairy = await tool(session, "todos_list", list=shop["id"], tag="DAIRY")
+        assert [t["title"] for t in dairy] == ["Milk"]
+        assert [s["title"] for s in dairy[0]["subtasks"]] == ["Cheese"]
+        everywhere = await tool(session, "todos_list", tag="dairy")
+        assert {t["id"] for t in everywhere} == {milk["id"], elsewhere["id"]}
+        # Without a tag, nothing changes: the whole list, as a tree.
+        whole = await tool(session, "todos_list", list="Shopping")
+        assert sorted(t["title"] for t in whole) == ["Bread", "Milk"]
+        assert "no tag" in await failure(session, "todos_list", tag="nope")
+        assert cheese["parent_id"] == milk["id"]
+        [tag_row] = await tool(session, "tags_list")
+        assert (tag_row["name"], tag_row["entries"]) == ("dairy", 3)

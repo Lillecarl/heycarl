@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from heycarl.app import PluginContext
 
 SCOPE: Final = "todos"
+TAGS: Final = "tags"
 COLUMNS: Final = "id,parent_id,list_id,title,notes,due,done_at,created_at"
 # The name for "no list"; the schema refuses a list by that name.
 INBOX: Final = "inbox"
@@ -64,8 +65,39 @@ async def list_id(ctx: Context, ref: ListRef) -> int | None:
     raise ToolError(f"no list {ref!r}; todos_lists shows them")
 
 
+def need_tags(ctx: Context) -> None:
+    if kernel_of(ctx).schema_for(TAGS) is None:
+        raise ToolError("tags need the tags plugin, which this Hey Carl does not run")
+
+
+async def tag_id(ctx: Context, name: str) -> int:
+    """The id of the person's tag by name, in any case."""
+    need_tags(ctx)
+    # Every tag, not an ilike filter: a name may hold PostgREST's wildcards.
+    rows: Rows = await call(ctx, TAGS, "GET", "tag", params={"select": "id,name"})
+    wanted = name.strip().lower()
+    for row in rows:
+        if row["name"].lower() == wanted:
+            return int(row["id"])
+    raise ToolError(f"no tag {name!r}; tags_list shows them")
+
+
+async def tagged_ids(ctx: Context, name: str) -> set[int]:
+    keys: list[dict[str, Any]] = await call(
+        ctx,
+        TAGS,
+        "POST",
+        "rpc/tagged_keys",
+        body={"tag_id": await tag_id(ctx, name), "of_scope": SCOPE, "of_table": "todo"},
+    )
+    return {int(k["id"]) for k in keys}
+
+
 async def todos(
-    ctx: Context, include_done: bool = False, ref: ListRef | None = None
+    ctx: Context,
+    include_done: bool = False,
+    ref: ListRef | None = None,
+    tag: str | None = None,
 ) -> Rows:
     params = {"select": COLUMNS, "order": "due.asc.nullslast,created_at"}
     if not include_done:
@@ -73,7 +105,11 @@ async def todos(
     if ref is not None:
         found = await list_id(ctx, ref)
         params["list_id"] = "is.null" if found is None else f"eq.{found}"
-    return tree(await call(ctx, SCOPE, "GET", "todo", params=params))
+    rows: Rows = await call(ctx, SCOPE, "GET", "todo", params=params)
+    if tag is not None:
+        ids = await tagged_ids(ctx, tag)
+        rows = [row for row in rows if row["id"] in ids]
+    return tree(rows)
 
 
 def counted(lists: Rows, open_todos: Rows) -> Rows:
@@ -90,12 +126,17 @@ def register(ctx: PluginContext) -> None:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def todos_list(
-        ctx: Context, include_done: bool = False, list: ListRef | None = None
+        ctx: Context,
+        include_done: bool = False,
+        list: ListRef | None = None,
+        tag: str | None = None,
     ) -> dict[str, Rows]:
         """List todos as a tree: each todo holds its `subtasks`. The soonest
         due come first, those with no due date last. With `list` (an id, a
-        name, or "inbox" for todos in no list), only that list."""
-        return {"todos": await todos(ctx, include_done, list)}
+        name, or "inbox" for todos in no list), only that list. With `tag`
+        (a tag name), only the todos that carry it; a tagged subtask of an
+        untagged todo shows at the top level."""
+        return {"todos": await todos(ctx, include_done, list, tag)}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def todos_lists(ctx: Context) -> dict[str, Rows]:
@@ -168,11 +209,14 @@ def register(ctx: PluginContext) -> None:
         due: str | None = None,
         parent_id: int | None = None,
         list: ListRef | None = None,
+        tag: str | None = None,
     ) -> dict[str, Any]:
         """Add a todo. `due` is an ISO 8601 time, with its offset. With
         `parent_id`, the todo is a subtask of that todo, in its list. With
         `list` (an id or a name), it goes in that list; with neither, in the
-        Inbox."""
+        Inbox. With `tag`, the todo carries that tag, made if missing."""
+        if tag is not None:
+            need_tags(ctx)
         body: dict[str, object] = {
             "title": title,
             "notes": notes,
@@ -182,6 +226,19 @@ def register(ctx: PluginContext) -> None:
         if list is not None and parent_id is None:
             body["list_id"] = await list_id(ctx, list)
         [row] = await call(ctx, SCOPE, "POST", "todo", body=body)
+        if tag is not None:
+            await call(
+                ctx,
+                TAGS,
+                "POST",
+                "rpc/tag_entry",
+                body={
+                    "of_scope": SCOPE,
+                    "of_table": "todo",
+                    "of_key": {"id": row["id"]},
+                    "name": tag,
+                },
+            )
         return row
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
