@@ -12,6 +12,7 @@
 </script>
 
 <script lang="ts">
+	import ErrorNotice from './ErrorNotice.svelte';
 	import { data, json } from './index.ts';
 
 	type Held = Tag & { link_id: number };
@@ -32,7 +33,7 @@
 	let all = $state<Tag[]>([]);
 	let adding = $state(false);
 	let query = $state('');
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 
 	const entry = () => ({ of_scope: scope, of_table: table, of_key: key });
 	const rpc = <T,>(name: string, args: object) => data<T>('tags', `rpc/${name}`, json('POST', args));
@@ -49,7 +50,7 @@
 			error = null;
 			await action();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -124,7 +125,7 @@
 	{:else}
 		<button onclick={open}>+ Tag</button>
 	{/if}
-	{#if error}<p class="error" role="alert">{error}</p>{/if}
+	{#if error != null}<div class="problem"><ErrorNotice {error} /></div>{/if}
 </div>
 
 <style>
@@ -156,8 +157,10 @@
 	.add input {
 		flex: 1 1 10rem;
 	}
-	.error {
-		margin: 0;
+	.problem {
 		width: 100%;
+	}
+	.problem > :global(p) {
+		margin: 0;
 	}
 </style>

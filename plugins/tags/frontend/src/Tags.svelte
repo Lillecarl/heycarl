@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { data, json, pluginPages } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import { hashHref, hashId, leave } from '@heycarl/sdk/route';
 	import { chipColor } from '@heycarl/sdk/TagChips.svelte';
@@ -36,7 +37,7 @@
 
 	// null until the first answer.
 	let tags = $state<Tag[] | null>(null);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let name = $state('');
 	let open = $derived(hashId('tag'));
 	let entries = $state<Entry[] | null>(null);
@@ -54,7 +55,7 @@
 			error = null;
 			await action();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -119,7 +120,7 @@
 	});
 </script>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if open !== null && current}
 	<p><a href={hashHref()}>← All tags</a></p>

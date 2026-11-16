@@ -9,7 +9,7 @@ export interface Page {
 class Registry {
 	plugins = $state<PluginInfo[]>([]);
 	pages = $state<Page[]>([]);
-	error = $state<string | null>(null);
+	error = $state<unknown>(null);
 	ready = $state(false);
 
 	async load(): Promise<void> {
@@ -23,7 +23,8 @@ class Registry {
 					.map((p) => import(/* @vite-ignore */ p.frontend!.module))
 			);
 			const failed = results.filter((r) => r.status === 'rejected');
-			if (failed.length) this.error = `${failed.length} plugin module(s) failed to load`;
+			if (failed.length)
+				this.error = new Error(`${failed.length} plugin module(s) did not load. Reload the page`);
 			this.pages = this.plugins.flatMap((p) =>
 				Object.entries(p.frontend?.pages ?? {}).map(([tag, title]) => ({
 					plugin: p.name,
@@ -32,7 +33,7 @@ class Registry {
 				}))
 			);
 		} catch (e) {
-			this.error = String(e);
+			this.error = new Error('The plugin list did not load', { cause: e });
 		} finally {
 			this.ready = true;
 		}

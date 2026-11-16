@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { api, data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import { hashHref, hashId } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
@@ -52,7 +53,7 @@
 	let calendars = $state<Cal[]>([]);
 	// null until the first answer, so "Nothing in the next days" never shows early.
 	let events = $state<Ev[] | null>(null);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let busy = $state(false);
 	let leaving = $state(false);
 	let open = $derived(hashId('event'));
@@ -111,12 +112,12 @@
 			error = null;
 			await action();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 		try {
 			await load();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 		busy = false;
 	}
@@ -126,7 +127,7 @@
 			const { url } = await api<{ url: string }>(`${PLUGIN}/connect`, { method: 'POST' });
 			location.href = url;
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -160,7 +161,7 @@
 		untrack(() => {
 			detail = null;
 			people = [];
-			if (id !== null) loadDetail(id).catch((e) => (error = String(e)));
+			if (id !== null) loadDetail(id).catch((e: unknown) => (error = e));
 		});
 	});
 
@@ -181,11 +182,11 @@
 		});
 
 	onMount(() => {
-		load().catch((e) => (error = String(e)));
+		load().catch((e: unknown) => (error = e));
 	});
 </script>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if configured === false}
 	<p class="muted">

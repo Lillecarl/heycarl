@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 
 	type Status = 'unsupported' | 'denied' | 'off' | 'on' | 'working';
 
 	let status = $state<Status>('working');
 	let message = $state<string | null>(null);
+	let error = $state<unknown>(null);
 
 	function urlBase64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
 		const padded = (base64 + '='.repeat((4 - (base64.length % 4)) % 4))
@@ -34,6 +36,7 @@
 	async function enable(): Promise<void> {
 		status = 'working';
 		message = null;
+		error = null;
 		try {
 			if ((await Notification.requestPermission()) !== 'granted') {
 				status = 'denied';
@@ -54,23 +57,24 @@
 			});
 			status = 'on';
 		} catch (e) {
-			message = String(e);
+			error = new Error('Notifications were not turned on', { cause: e });
 			await refresh();
 		}
 	}
 
 	async function test(): Promise<void> {
 		message = null;
+		error = null;
 		try {
 			const { delivered } = await api<{ delivered: number }>('/api/push/test', { method: 'POST' });
 			message = `Sent to ${delivered} device(s).`;
 		} catch (e) {
-			message = String(e);
+			error = new Error('The test was not sent', { cause: e });
 		}
 	}
 
 	onMount(() => {
-		refresh().catch((e) => (message = String(e)));
+		refresh().catch((e: unknown) => (error = e));
 	});
 </script>
 
@@ -90,6 +94,7 @@
 		<p class="muted">Checking…</p>
 	{/if}
 	{#if message}<p class="muted" role="status">{message}</p>{/if}
+	<ErrorNotice {error} />
 </section>
 
 <style>

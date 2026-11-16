@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import Related from '@heycarl/sdk/Related.svelte';
 
@@ -19,7 +20,7 @@
 	let reminders = $state<Reminder[] | null>(null);
 	let title = $state('');
 	let when = $state(inAnHour());
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let open = $state<number | null>(null);
 
 	// datetime-local wants local time without a zone.
@@ -39,7 +40,7 @@
 			await action();
 			await load();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -59,7 +60,7 @@
 	const format = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
 	onMount(() => {
-		load().catch((e) => (error = String(e)));
+		load().catch((e: unknown) => (error = e));
 		// The kernel sends due reminders; this shows their new state.
 		const timer = setInterval(() => load().catch(() => {}), 30_000);
 		return () => clearInterval(timer);
@@ -78,7 +79,7 @@
 	<button type="submit">Add</button>
 </form>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if reminders === null}
 	<p class="muted">Loading…</p>

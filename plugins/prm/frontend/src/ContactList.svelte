@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import Avatar from './Avatar.svelte';
 	import {
 		SCOPE,
@@ -23,7 +24,7 @@
 	let archived = $state(false);
 	let first = $state('');
 	let last = $state('');
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 
 	// Only the newest search may fill the list.
 	let generation = 0;
@@ -55,7 +56,7 @@
 	}
 
 	function report(e: unknown): void {
-		error = String(e);
+		error = e;
 	}
 
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -101,7 +102,7 @@
 	});
 </script>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if !query && (upcoming.length || overdue.length)}
 	<section>

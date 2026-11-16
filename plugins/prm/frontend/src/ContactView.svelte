@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { hashHref, leave } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
 	import Avatar from './Avatar.svelte';
@@ -52,7 +53,7 @@
 	let kinds = $state<string[]>([]);
 	let others = $state<Pick<Contact, 'id' | 'first_name' | 'last_name'>[]>([]);
 	let allTags = $state<Tag[]>([]);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let editing = $state(false);
 
 	async function load(): Promise<void> {
@@ -85,7 +86,7 @@
 			await load();
 			return true;
 		} catch (e) {
-			error = String(e);
+			error = e;
 			return false;
 		}
 	}
@@ -141,7 +142,7 @@
 			await del(`contact?id=eq.${id}`);
 			leave();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -311,14 +312,14 @@
 
 	onMount(() => {
 		window.scrollTo(0, 0);
-		load().catch((e) => (error = String(e)));
-		loadChoices().catch((e) => (error = String(e)));
+		load().catch((e: unknown) => (error = e));
+		loadChoices().catch((e: unknown) => (error = e));
 	});
 </script>
 
 <p><a href={hashHref()}>← Everyone</a></p>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if missing}
 	<p>No such contact.</p>

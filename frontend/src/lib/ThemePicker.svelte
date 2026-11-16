@@ -8,18 +8,19 @@
 		useTheme,
 		type Theme
 	} from '#lib/theme.ts';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 
 	const DEFAULT = '';
 
 	let themes: Theme[] = $state.raw([]);
 	let chosen = $state(storedTheme() ?? DEFAULT);
-	let problem: string | null = $state(null);
+	let problem: unknown = $state(null);
 
 	const light = $derived(themes.filter((t) => t.variant === 'light'));
 	const dark = $derived(themes.filter((t) => t.variant === 'dark'));
 
 	const report = (what: string) => (error: unknown) => {
-		problem = `${what}: ${String(error)}`;
+		problem = new Error(what, { cause: error });
 	};
 
 	onMount(() => {
@@ -57,7 +58,7 @@
 		</optgroup>
 	</select>
 </label>
-{#if problem}<span class="error" role="alert">{problem}</span>{/if}
+{#if problem}<div class="problem"><ErrorNotice error={problem} /></div>{/if}
 
 <style>
 	.picker {
@@ -72,7 +73,10 @@
 		color: var(--hc-fg);
 		max-width: 12rem;
 	}
-	.error {
+	.problem {
 		white-space: nowrap;
+	}
+	.problem > :global(p) {
+		margin: 0;
 	}
 </style>

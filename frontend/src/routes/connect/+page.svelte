@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, ApiError, data, errorText, json } from '@heycarl/sdk';
+	import { api, ApiError, data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 
 	type Grant = {
 		id: number;
@@ -13,14 +14,14 @@
 	const url = `${location.origin}/mcp`;
 	let copied = $state(false);
 	let grants = $state<Grant[] | null>(null);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 
 	async function attempt(what: string, work: () => Promise<void>): Promise<void> {
 		error = null;
 		try {
 			await work();
 		} catch (e) {
-			error = `${what}: ${errorText(e)}`;
+			error = new Error(what, { cause: e });
 		}
 	}
 
@@ -168,9 +169,7 @@
 </details>
 
 <h2>Connected apps</h2>
-{#if error}
-	<p class="error" role="alert">{error}</p>
-{/if}
+<ErrorNotice {error} />
 {#if grants === null}
 	<p class="note">Loading…</p>
 {:else if grants.length === 0}

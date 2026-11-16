@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import { hashHref, hashId, leave } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
@@ -37,7 +38,7 @@
 
 	// null until the first answer.
 	let counters = $state<Counter[] | null>(null);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let name = $state('');
 	let unit = $state('');
 	let step = $state(1);
@@ -93,13 +94,13 @@
 			error = null;
 			await action();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 		try {
 			await loadList();
 			if (shown !== null) await loadDetail(shown);
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -165,7 +166,7 @@
 			deleting = false;
 			amount = null;
 			target = null;
-			if (id !== null) loadDetail(id).catch((e) => (error = String(e)));
+			if (id !== null) loadDetail(id).catch((e: unknown) => (error = e));
 		});
 	});
 
@@ -180,11 +181,11 @@
 		});
 
 	onMount(() => {
-		loadList().catch((e) => (error = String(e)));
+		loadList().catch((e: unknown) => (error = e));
 	});
 </script>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if counters === null}
 	<p class="muted">Loading…</p>

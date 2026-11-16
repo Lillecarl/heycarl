@@ -8,6 +8,7 @@
     "./base": "./src/base.ts",
     "./base.css": "./src/base.css",
     "./route": "./src/route.svelte.ts",
+    "./ErrorNotice.svelte": "./src/ErrorNotice.svelte",
     "./Related.svelte": "./src/Related.svelte",
     "./TagChips.svelte": "./src/TagChips.svelte"
   }

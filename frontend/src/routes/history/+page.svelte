@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { api, data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 
 	type Item = { version: number; scope: string; table: string; key: object; label: string };
 	type Entry = { entry: number; at: string; via: string | null; items: Item[] };
@@ -27,7 +28,7 @@
 	let changes = $state<Version[] | null>(null);
 	let more = $state(true);
 	let clients = $state<Record<string, string>>({});
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let notice = $state<string | null>(null);
 	// The trash entry whose "Delete for good" waits for a second press.
 	let purging = $state<number | null>(null);
@@ -62,7 +63,7 @@
 		try {
 			await work();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -145,9 +146,7 @@
 	<a href="/history?view=changes" aria-current={view === 'changes' ? 'page' : undefined}>Changes</a>
 </nav>
 
-{#if error}
-	<p class="error" role="alert">{error}</p>
-{/if}
+<ErrorNotice {error} />
 {#if notice}
 	<p class="notice" role="status">{notice}</p>
 {/if}

@@ -2,6 +2,7 @@
 	import { onMount, type Snippet } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { registry } from '#lib/plugins.svelte.ts';
 	import ThemePicker from '#lib/ThemePicker.svelte';
 	// The default base16 palettes, light and dark (nix/themes.nix).
@@ -39,9 +40,7 @@
 	<button class="sign-out" onclick={signOut}>Sign out</button>
 </nav>
 
-{#if registry.error}
-	<p class="error" role="alert">{registry.error}</p>
-{/if}
+<div class="problem"><ErrorNotice error={registry.error} /></div>
 
 <main id="main" tabindex="-1">
 	{@render children()}
@@ -89,7 +88,7 @@
 		color: var(--hc-muted);
 		border-color: transparent;
 	}
-	.error {
+	.problem {
 		padding: 0 1rem;
 	}
 	main {

@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import ErrorNotice from './ErrorNotice.svelte';
 	import { data, json, pluginPages } from './index.ts';
 
 	type Entry = {
@@ -26,7 +27,7 @@
 	let found = $state<Entry[]>([]);
 	let label = $state('');
 	let adding = $state(false);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let pages = $state<Record<string, string>>({});
 
 	const rpc = <T,>(name: string, args: object) =>
@@ -50,7 +51,7 @@
 			error = null;
 			await action();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -123,9 +124,7 @@
 
 <section class="related">
 	<h3>Related</h3>
-	{#if error}
-		<p class="error" role="alert">{error}</p>
-	{/if}
+	<ErrorNotice {error} />
 	{#if links === null}
 		<p class="muted">Loading…</p>
 	{:else if links.length}

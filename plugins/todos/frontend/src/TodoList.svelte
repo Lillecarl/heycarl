@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import { hashHref, hashId, leave } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
@@ -30,7 +31,7 @@
 	// The open list lives in the hash (#/list/3); no list is the Inbox.
 	let current = $derived(hashId('list'));
 	let title = $state('');
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	let open = $state<number | null>(null);
 	let adding = $state<number | null>(null);
 	let subtitle = $state('');
@@ -193,7 +194,7 @@
 			await action();
 			await load();
 		} catch (e) {
-			error = String(e);
+			error = e;
 		}
 	}
 
@@ -259,7 +260,7 @@
 	}
 
 	onMount(() => {
-		load().catch((e) => (error = String(e)));
+		load().catch((e: unknown) => (error = e));
 	});
 </script>
 
@@ -309,7 +310,7 @@
 						scope="todos"
 						table="todo"
 						key={{ id: todo.id }}
-						onchange={() => loadTags().catch((e) => (error = String(e)))}
+						onchange={() => loadTags().catch((e: unknown) => (error = e))}
 					/>
 				{/if}
 				<Related scope="todos" table="todo" key={{ id: todo.id }} />
@@ -439,7 +440,7 @@
 	</form>
 {/if}
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+<ErrorNotice {error} />
 
 {#if missing}
 	<p>No such list. <a href={hashHref()}>Show the Inbox</a></p>
