@@ -2,9 +2,11 @@
 	The entries linked to one entry, for any plugin page to embed:
 	<Related scope="todos" table="todo" key={{ id: todo.id }} />
 	Links live in the core (DESIGN.md "Links"), so this needs no plugin code.
+	It renders an h3: the embedding page's entry heading is an h2.
 -->
 <script lang="ts">
-	import { api, data, json, type PluginInfo } from './index.ts';
+	import { onMount } from 'svelte';
+	import { data, json, pluginPages } from './index.ts';
 
 	type Entry = {
 		scope: string;
@@ -18,7 +20,8 @@
 	let { scope, table, key }: { scope: string; table: string; key: Record<string, unknown> } =
 		$props();
 
-	let links = $state<Link[]>([]);
+	// null until the first answer, so "Nothing linked" never shows early.
+	let links = $state<Link[] | null>(null);
 	let query = $state('');
 	let found = $state<Entry[]>([]);
 	let label = $state('');
@@ -29,6 +32,8 @@
 	const rpc = <T,>(name: string, args: object) =>
 		data<T>('core', `rpc/${name}`, json('POST', args));
 
+	const entryKey = (e: Entry) => JSON.stringify([e.scope, e.table, e.key]);
+
 	function same(a: Entry): boolean {
 		return a.scope === scope && a.table === table && JSON.stringify(a.key) === JSON.stringify(key);
 	}
@@ -37,6 +42,8 @@
 	function href(e: Entry): string {
 		return e.url ?? pages[e.scope] ?? '/';
 	}
+
+	const name = (e: Entry) => e.label || e.table.replaceAll('_', ' ');
 
 	async function run(action: () => Promise<unknown>): Promise<void> {
 		try {
@@ -70,10 +77,10 @@
 		}
 		const rows = await rpc<{ entry: Entry }[]>('entries', { q, max_rows: 10 });
 		if (mine !== searchGeneration) return;
-		const linked = new Set(links.map((l) => JSON.stringify([l.entry.scope, l.entry.table, l.entry.key])));
+		const linked = new Set((links ?? []).map((l) => entryKey(l.entry)));
 		found = rows
 			.map((r) => r.entry)
-			.filter((e) => !same(e) && !linked.has(JSON.stringify([e.scope, e.table, e.key])))
+			.filter((e) => !same(e) && !linked.has(entryKey(e)))
 			.slice(0, 10);
 	}
 
@@ -103,38 +110,35 @@
 		});
 	}
 
-	$effect(() => () => clearTimeout(searchTimer));
-
+	// load() reads scope, table and key, so the list follows the entry shown.
 	$effect(() => {
-		// Reload when the page shows another entry.
-		void [scope, table, JSON.stringify(key)];
 		run(load);
 	});
 
-	$effect(() => {
-		run(async () => {
-			const plugins = await api<PluginInfo[]>('/api/plugins');
-			pages = Object.fromEntries(
-				plugins
-					.filter((p) => p.frontend && Object.keys(p.frontend.pages).length)
-					.map((p) => [p.name, `/p/${p.name}/${Object.keys(p.frontend!.pages)[0]}`])
-			);
-		});
+	onMount(() => {
+		run(async () => (pages = await pluginPages()));
+		return () => clearTimeout(searchTimer);
 	});
 </script>
 
 <section class="related">
-	<h4>Related</h4>
+	<h3>Related</h3>
 	{#if error}
-		<p class="error">{error}</p>
+		<p class="error" role="alert">{error}</p>
 	{/if}
-	{#if links.length}
-		<ul>
+	{#if links === null}
+		<p class="muted">Loading…</p>
+	{:else if links.length}
+		<ul class="plain">
 			{#each links as link (link.id)}
 				<li>
-					<a href={href(link.entry)}>{link.entry.label || link.entry.table}</a>
-					<span class="muted">{link.entry.table.replaceAll('_', ' ')}{link.label ? ` · ${link.label}` : ''}</span>
-					<button class="icon" aria-label="Remove link" onclick={() => remove(link)}>×</button>
+					<a href={href(link.entry)}>{name(link.entry)}</a>
+					<span class="muted"
+						>{link.entry.table.replaceAll('_', ' ')}{link.label ? ` · ${link.label}` : ''}</span
+					>
+					<button class="icon" aria-label="Unlink {name(link.entry)}" onclick={() => remove(link)}
+						>×</button
+					>
 				</li>
 			{/each}
 		</ul>
@@ -143,17 +147,25 @@
 	{/if}
 	{#if adding}
 		<div class="add">
-			<input
-				placeholder="Find a person, todo, reminder…"
-				bind:value={query}
-				oninput={queueSearch}
-			/>
-			<input placeholder="How they relate (optional)" bind:value={label} maxlength="200" />
+			<label>
+				Find an entry
+				<input
+					type="search"
+					placeholder="A person, todo, reminder…"
+					bind:value={query}
+					oninput={queueSearch}
+					{@attach (el) => el.focus()}
+				/>
+			</label>
+			<label>
+				How they relate (optional)
+				<input bind:value={label} maxlength="200" />
+			</label>
 			{#if found.length}
-				<ul class="found">
-					{#each found as e (JSON.stringify([e.scope, e.table, e.key]))}
+				<ul class="plain found">
+					{#each found as e (entryKey(e))}
 						<li>
-							<button onclick={() => add(e)}>{e.label}</button>
+							<button onclick={() => add(e)}>Link {e.label}</button>
 							<span class="muted">{e.scope} · {e.table.replaceAll('_', ' ')}</span>
 						</li>
 					{/each}
@@ -170,60 +182,30 @@
 	.related {
 		margin-top: 0.75rem;
 	}
-	h4 {
+	h3 {
 		margin: 0 0 0.25rem;
-		font-size: 0.95em;
-	}
-	ul {
-		list-style: none;
-		padding: 0;
-		margin: 0.25rem 0;
 	}
 	li {
 		display: flex;
 		gap: 0.5rem;
-		align-items: baseline;
-		padding: 0.15rem 0;
+		align-items: center;
 		overflow-wrap: anywhere;
-	}
-	a {
-		color: var(--hc-accent);
-	}
-	.muted {
-		color: var(--hc-muted);
-		font-size: 0.9em;
-	}
-	.error {
-		color: var(--hc-error);
 	}
 	.add {
 		display: flex;
 		flex-direction: column;
-		gap: 0.4rem;
+		gap: 0.5rem;
 		max-width: 28rem;
 	}
-	input,
-	button {
-		font: inherit;
-		color: var(--hc-fg);
-		background: none;
-		border: 1px solid var(--hc-muted);
-		border-radius: 6px;
-		padding: 0.3rem 0.6rem;
+	.add label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
 	}
-	button {
-		cursor: pointer;
+	.add > button {
 		align-self: flex-start;
 	}
 	.found button {
-		border: none;
-		padding: 0;
-		color: var(--hc-accent);
 		text-align: left;
-	}
-	.icon {
-		border: none;
-		padding: 0 0.3rem;
-		color: var(--hc-muted);
 	}
 </style>
