@@ -159,7 +159,7 @@
 	}
 
 	function toggle(c: Counter): void {
-		location.hash = open === c.id ? '' : `#/counter/${c.id}`;
+		location.hash = open === c.id ? '#/' : `#/counter/${c.id}`;
 	}
 
 	function show(id: number | null): void {
