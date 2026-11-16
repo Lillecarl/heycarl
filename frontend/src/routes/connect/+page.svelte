@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { api, data, HttpError, json } from '@heycarl/sdk';
 
 	type Grant = {
 		id: number;
@@ -14,13 +15,29 @@
 	let grants = $state<Grant[] | null>(null);
 	let error = $state<string | null>(null);
 
-	async function load(): Promise<void> {
-		const r = await fetch('/api/oauth/grants');
-		if (!r.ok) {
-			error = `Could not load connections: ${r.status}`;
-			return;
+	// PostgREST and the kernel answer an error as JSON with a message.
+	function reason(e: unknown): string {
+		if (!(e instanceof HttpError)) return String(e);
+		try {
+			const body: unknown = JSON.parse(e.body);
+			if (body && typeof body === 'object' && 'message' in body) return String(body.message);
+		} catch {
+			// Not JSON: the status says enough.
 		}
-		grants = await r.json();
+		return `HTTP ${e.status}`;
+	}
+
+	async function attempt(what: string, work: () => Promise<void>): Promise<void> {
+		error = null;
+		try {
+			await work();
+		} catch (e) {
+			error = `${what}: ${reason(e)}`;
+		}
+	}
+
+	async function load(): Promise<void> {
+		grants = await api<Grant[]>('/api/oauth/grants');
 	}
 
 	async function copy(): Promise<void> {
@@ -29,15 +46,22 @@
 		setTimeout(() => (copied = false), 2000);
 	}
 
-	async function revoke(grant: Grant): Promise<void> {
-		const name = grant.client_name ?? grant.redirect_hosts.join(', ');
-		if (!confirm(`Disconnect ${name}? It loses access at once.`)) return;
-		const r = await fetch(`/api/oauth/grants/${grant.id}`, { method: 'DELETE' });
-		if (!r.ok && r.status !== 404) {
-			error = `Could not disconnect: ${r.status}`;
-			return;
-		}
-		await load();
+	const grantName = (g: Grant) => g.client_name ?? g.redirect_hosts.join(', ');
+
+	// The grant whose Disconnect waits for a second press.
+	let revoking = $state<number | null>(null);
+
+	function revoke(grant: Grant): Promise<void> {
+		revoking = null;
+		return attempt('Could not disconnect', async () => {
+			try {
+				await api(`/api/oauth/grants/${grant.id}`, { method: 'DELETE' });
+			} catch (e) {
+				// Already gone is what was asked for.
+				if (!(e instanceof HttpError && e.status === 404)) throw e;
+			}
+			await load();
+		});
 	}
 
 	type AppPassword = {
@@ -51,56 +75,47 @@
 	type Made = { username: string; secret: string };
 
 	const davUrl = `${location.origin}/dav/`;
-	const passwordsApi = '/api/data/core/app_password';
 	let passwords = $state<AppPassword[] | null>(null);
 	let made = $state<Made | null>(null);
 	let deviceName = $state('');
 	let allowWrite = $state(false);
+	// The app password whose Revoke waits for a second press.
+	let revokingPassword = $state<string | null>(null);
 
 	async function loadPasswords(): Promise<void> {
-		const r = await fetch(`${passwordsApi}?order=created_at`);
-		if (!r.ok) {
-			error = `Could not load app passwords: ${r.status}`;
-			return;
-		}
-		passwords = await r.json();
+		passwords = await data<AppPassword[]>('core', 'app_password?order=created_at');
 	}
 
-	async function makePassword(event: SubmitEvent): Promise<void> {
+	function makePassword(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
-		const r = await fetch('/api/data/core/rpc/app_password_create', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ name: deviceName, allow_write: allowWrite })
+		return attempt('Could not make an app password', async () => {
+			made = await data<Made>(
+				'core',
+				'rpc/app_password_create',
+				json('POST', { name: deviceName, allow_write: allowWrite })
+			);
+			deviceName = '';
+			allowWrite = false;
+			await loadPasswords();
 		});
-		if (!r.ok) {
-			error = `Could not make an app password: ${(await r.json()).message ?? r.status}`;
-			return;
-		}
-		made = await r.json();
-		deviceName = '';
-		allowWrite = false;
-		await loadPasswords();
 	}
 
-	async function revokePassword(p: AppPassword): Promise<void> {
-		if (!confirm(`Revoke the app password for ${p.name}? It stops working at once.`)) return;
-		const r = await fetch(`${passwordsApi}?id=eq.${encodeURIComponent(p.id)}`, {
-			method: 'DELETE'
+	function revokePassword(p: AppPassword): Promise<void> {
+		revokingPassword = null;
+		return attempt('Could not revoke', async () => {
+			await data('core', `app_password?id=eq.${encodeURIComponent(p.id)}`, { method: 'DELETE' });
+			if (made?.username === p.id) made = null;
+			await loadPasswords();
 		});
-		if (!r.ok) {
-			error = `Could not revoke: ${r.status}`;
-			return;
-		}
-		if (made?.username === p.id) made = null;
-		await loadPasswords();
 	}
 
 	onMount(() => {
-		load();
-		loadPasswords();
+		attempt('Could not load connections', load);
+		attempt('Could not load app passwords', loadPasswords);
 	});
 </script>
+
+<svelte:head><title>Connect AI · Hey Carl</title></svelte:head>
 
 <h1>Connect an AI</h1>
 <p>
@@ -166,14 +181,14 @@
 
 <h2>Connected apps</h2>
 {#if error}
-	<p class="error">{error}</p>
+	<p class="error" role="alert">{error}</p>
 {/if}
 {#if grants === null}
 	<p class="note">Loading…</p>
 {:else if grants.length === 0}
 	<p class="note">Nothing is connected.</p>
 {:else}
-	<ul class="grants">
+	<ul class="plain grants">
 		{#each grants as grant (grant.id)}
 			<li>
 				<div>
@@ -184,7 +199,18 @@
 						{new Date(grant.created_at).toLocaleDateString()}
 					</div>
 				</div>
-				<button onclick={() => revoke(grant)}>Disconnect</button>
+				<div class="actions">
+					{#if revoking === grant.id}
+						<button class="danger" onclick={() => revoke(grant)}
+							>Disconnect {grantName(grant)}: it loses access at once</button
+						>
+						<button onclick={() => (revoking = null)}>Keep</button>
+					{:else}
+						<button aria-label="Disconnect {grantName(grant)}" onclick={() => (revoking = grant.id)}
+							>Disconnect</button
+						>
+					{/if}
+				</div>
 			</li>
 		{/each}
 	</ul>
@@ -197,8 +223,14 @@
 </p>
 
 <form onsubmit={makePassword}>
-	<input bind:value={deviceName} placeholder="Device, e.g. Phone" maxlength="100" required />
-	<label><input type="checkbox" bind:checked={allowWrite} /> Allow changes</label>
+	<input
+		bind:value={deviceName}
+		aria-label="Device"
+		placeholder="Device, e.g. Phone"
+		maxlength="100"
+		required
+	/>
+	<label class="check"><input type="checkbox" bind:checked={allowWrite} /> Allow changes</label>
 	<button type="submit">Make</button>
 </form>
 
@@ -222,7 +254,7 @@
 {:else if passwords.length === 0}
 	<p class="note">No app passwords.</p>
 {:else}
-	<ul class="grants">
+	<ul class="plain grants">
 		{#each passwords as p (p.id)}
 			<li>
 				<div>
@@ -234,7 +266,18 @@
 						{new Date(p.expires_at).toLocaleDateString()}
 					</div>
 				</div>
-				<button onclick={() => revokePassword(p)}>Revoke</button>
+				<div class="actions">
+					{#if revokingPassword === p.id}
+						<button class="danger" onclick={() => revokePassword(p)}
+							>Revoke {p.name}: it stops working at once</button
+						>
+						<button onclick={() => (revokingPassword = null)}>Keep</button>
+					{:else}
+						<button aria-label="Revoke {p.name}" onclick={() => (revokingPassword = p.id)}
+							>Revoke</button
+						>
+					{/if}
+				</div>
 			</li>
 		{/each}
 	</ul>
@@ -248,13 +291,11 @@
 		align-items: center;
 		margin: 1rem 0;
 	}
-	input:not([type]) {
-		font: inherit;
-		padding: 0.3rem 0.5rem;
-		color: var(--hc-fg);
-		background: none;
-		border: 1px solid var(--hc-muted);
-		border-radius: 6px;
+	.check {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 3rem;
 	}
 	.made {
 		margin: 1rem 0;
@@ -302,28 +343,14 @@
 	.note {
 		color: var(--hc-muted);
 	}
-	.grants {
-		list-style: none;
-		padding: 0;
-	}
 	.grants li {
 		display: flex;
+		flex-wrap: wrap;
 		justify-content: space-between;
 		align-items: center;
-		gap: 1rem;
+		gap: 0.5rem 1rem;
 		padding: 0.5rem 0;
-		border-bottom: 1px solid var(--hc-muted);
-	}
-	button {
-		font: inherit;
-		padding: 0.3rem 0.8rem;
-		color: var(--hc-fg);
-		background: none;
-		border: 1px solid var(--hc-muted);
-		border-radius: 6px;
-		cursor: pointer;
-	}
-	.error {
-		color: var(--hc-error);
+		border-bottom: 1px solid var(--hc-border);
+		overflow-wrap: anywhere;
 	}
 </style>
