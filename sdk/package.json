@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./base": "./src/base.ts",
+    "./base.css": "./src/base.css",
     "./Related.svelte": "./src/Related.svelte",
     "./TagChips.svelte": "./src/TagChips.svelte"
   }

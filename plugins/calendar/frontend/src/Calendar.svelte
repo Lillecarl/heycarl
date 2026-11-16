@@ -1,8 +1,9 @@
-<svelte:options customElement="heycarl-calendar" />
+<svelte:options customElement={{ tag: 'heycarl-calendar', extend: withBase }} />
 
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, data, json } from '@heycarl/sdk';
+	import { withBase } from '@heycarl/sdk/base';
 	import Related from '@heycarl/sdk/Related.svelte';
 
 	interface Account {

@@ -1,8 +1,9 @@
-<svelte:options customElement="heycarl-prm" />
+<svelte:options customElement={{ tag: 'heycarl-prm', extend: withBase }} />
 
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import { withBase } from '@heycarl/sdk/base';
 	import ContactList from './ContactList.svelte';
 	import ContactView from './ContactView.svelte';
 	import { SCOPE } from './types.ts';

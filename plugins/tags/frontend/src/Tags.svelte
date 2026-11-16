@@ -1,8 +1,9 @@
-<svelte:options customElement="heycarl-tags" />
+<svelte:options customElement={{ tag: 'heycarl-tags', extend: withBase }} />
 
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, data, json, type PluginInfo } from '@heycarl/sdk';
+	import { withBase } from '@heycarl/sdk/base';
 
 	interface Tag {
 		id: number;

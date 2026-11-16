@@ -1,8 +1,9 @@
-<svelte:options customElement="heycarl-todos" />
+<svelte:options customElement={{ tag: 'heycarl-todos', extend: withBase }} />
 
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
+	import { withBase } from '@heycarl/sdk/base';
 	import Related from '@heycarl/sdk/Related.svelte';
 	import TagChips from '@heycarl/sdk/TagChips.svelte';
 
