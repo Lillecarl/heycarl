@@ -60,6 +60,8 @@
 	let children = $derived(childrenOf(shown));
 	let openCount = $derived(countOpen(all));
 	let currentList = $derived(lists.find((l) => l.id === current) ?? null);
+	// A link to a deleted list: nothing to add to, and nothing to show.
+	let missing = $derived(todos !== null && current !== null && !currentList);
 
 	function countOpen(list: Todo[]): Map<number | null, number> {
 		const out = new Map<number | null, number>();
@@ -403,7 +405,7 @@
 		>
 		{#if dropping}
 			<button class="danger" onclick={dropList}
-				>Delete “{currentList.name}” with {inList} todos</button
+				>Delete “{currentList.name}” with {inList} {inList === 1 ? 'todo' : 'todos'}</button
 			>
 			<button onclick={() => (droppingOn = null)}>Keep</button>
 		{:else}
@@ -425,19 +427,23 @@
 	</form>
 {/if}
 
-<form class="actions" onsubmit={add}>
-	<input
-		bind:value={title}
-		aria-label={currentList ? `New todo in ${currentList.name}` : 'New todo'}
-		placeholder={currentList ? `New todo in ${currentList.name}` : 'New todo'}
-		maxlength="500"
-	/>
-	<button type="submit">Add</button>
-</form>
+{#if !missing}
+	<form class="actions" onsubmit={add}>
+		<input
+			bind:value={title}
+			aria-label={currentList ? `New todo in ${currentList.name}` : 'New todo'}
+			placeholder={currentList ? `New todo in ${currentList.name}` : 'New todo'}
+			maxlength="500"
+		/>
+		<button type="submit">Add</button>
+	</form>
+{/if}
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-{#if todos === null}
+{#if missing}
+	<p>No such list. <a href={hashHref()}>Show the Inbox</a></p>
+{:else if todos === null}
 	<p class="muted">Loading…</p>
 {:else if !shown.length}
 	<p class="muted">{filterTag ? `Nothing here carries “${filterTag.name}”.` : 'Nothing to do here.'}</p>
