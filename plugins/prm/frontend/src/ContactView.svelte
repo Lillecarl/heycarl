@@ -77,13 +77,15 @@
 		]);
 	}
 
-	async function act(action: () => Promise<unknown>): Promise<void> {
+	async function act(action: () => Promise<unknown>): Promise<boolean> {
 		try {
 			error = null;
 			await action();
 			await load();
+			return true;
 		} catch (e) {
 			error = String(e);
+			return false;
 		}
 	}
 
@@ -121,7 +123,9 @@
 		event.preventDefault();
 		const days = Number(draft.stay_in_touch_days);
 		const body = { ...draft, stay_in_touch_days: days > 0 ? days : null };
-		act(() => patch(`contact?id=eq.${id}`, body)).then(() => (editing = false));
+		act(() => patch(`contact?id=eq.${id}`, body)).then((saved) => {
+			if (saved) editing = false;
+		});
 	}
 
 	function toggle(column: 'favorite' | 'archived'): void {
