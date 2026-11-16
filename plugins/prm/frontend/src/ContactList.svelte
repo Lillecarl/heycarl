@@ -15,7 +15,8 @@
 
 	const COLUMNS = 'id,first_name,last_name,nickname,company,favorite,archived,last_contacted';
 
-	let contacts = $state<Contact[]>([]);
+	// null until the first answer.
+	let contacts = $state<Contact[] | null>(null);
 	let upcoming = $state<ImportantDate[]>([]);
 	let overdue = $state<Contact[]>([]);
 	let query = $state('');
@@ -24,13 +25,18 @@
 	let last = $state('');
 	let error = $state<string | null>(null);
 
+	// Only the newest search may fill the list.
+	let generation = 0;
+
 	async function loadContacts(): Promise<void> {
+		const mine = ++generation;
 		const q = query.trim();
 		// PostgREST filters an RPC's result like a table.
 		const path = q
 			? `rpc/search?q=${encodeURIComponent(q)}&select=${COLUMNS}`
 			: `contact?select=${COLUMNS}&order=favorite.desc,first_name,last_name`;
-		contacts = await data<Contact[]>(SCOPE, `${path}&archived=is.${archived}`);
+		const rows = await data<Contact[]>(SCOPE, `${path}&archived=is.${archived}`);
+		if (mine === generation) contacts = rows;
 	}
 
 	async function loadDashboard(): Promise<void> {
@@ -88,12 +94,14 @@
 	}
 
 	onMount(() => {
+		window.scrollTo(0, 0);
 		loadContacts().catch(report);
 		loadDashboard().catch(report);
+		return () => clearTimeout(searchTimer);
 	});
 </script>
 
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="error" role="alert">{error}</p>{/if}
 
 {#if !query && (upcoming.length || overdue.length)}
 	<section>
@@ -128,42 +136,108 @@
 {/if}
 
 <section>
-	<form class="row" onsubmit={(e) => e.preventDefault()}>
+	<h2 class="visually-hidden">Everyone</h2>
+	<search class="row">
 		<input
 			class="grow"
 			type="search"
+			aria-label="Search people"
 			placeholder="Search names, emails, phones, tags…"
 			bind:value={query}
 			oninput={onSearch}
 		/>
-		<label class="muted">
+		<label class="check muted">
 			<input type="checkbox" bind:checked={archived} onchange={() => loadContacts().catch(report)} />
 			Archived
 		</label>
-	</form>
+	</search>
 
-	<ul class="plain">
-		{#each contacts as c (c.id)}
-			<li>
-				<Avatar contact={c} />
-				<a class="grow" href={contactHref(c.id)}>
-					{fullName(c)}
-					{#if c.nickname}<span class="muted">“{c.nickname}”</span>{/if}
-					{#if c.company}<span class="muted">· {c.company}</span>{/if}
-				</a>
-				{#if c.favorite}<span aria-label="Favourite">★</span>{/if}
-			</li>
-		{:else}
-			<li class="muted">{query ? 'Nobody matches.' : 'No contacts yet.'}</li>
-		{/each}
-	</ul>
+	{#if contacts === null}
+		<p class="muted">Loading…</p>
+	{:else}
+		<ul class="plain">
+			{#each contacts as c (c.id)}
+				<li>
+					<Avatar contact={c} />
+					<a class="grow" href={contactHref(c.id)}>
+						{fullName(c)}
+						{#if c.nickname}<span class="muted">“{c.nickname}”</span>{/if}
+						{#if c.company}<span class="muted">· {c.company}</span>{/if}
+						{#if c.favorite}<span aria-hidden="true">★</span><span class="visually-hidden"
+								>, favourite</span
+							>{/if}
+					</a>
+				</li>
+			{:else}
+				<li class="muted">{query ? 'Nobody matches.' : 'No contacts yet.'}</li>
+			{/each}
+		</ul>
+	{/if}
 </section>
 
 <section>
 	<h2>Add someone</h2>
 	<form class="row" onsubmit={add}>
-		<input class="grow" placeholder="First name" bind:value={first} maxlength="100" required />
-		<input class="grow" placeholder="Last name" bind:value={last} maxlength="100" />
+		<input
+			class="grow"
+			aria-label="First name"
+			placeholder="First name"
+			bind:value={first}
+			maxlength="100"
+			required
+		/>
+		<input
+			class="grow"
+			aria-label="Last name"
+			placeholder="Last name"
+			bind:value={last}
+			maxlength="100"
+		/>
 		<button type="submit">Add</button>
 	</form>
 </section>
+
+<style>
+	section {
+		margin: 1.5rem 0;
+	}
+	h2 {
+		font-size: 1rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--hc-muted);
+		margin: 0 0 0.5rem;
+	}
+	ul + h2 {
+		margin-top: 1.5rem;
+	}
+	.row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0.5rem 0;
+	}
+	.row .grow {
+		flex: 1 1 10rem;
+	}
+	.check {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 3rem;
+	}
+	li {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		min-height: 3rem;
+	}
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+	a {
+		text-decoration: none;
+	}
+</style>

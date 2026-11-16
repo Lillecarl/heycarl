@@ -13,3 +13,21 @@
 </script>
 
 <span class="avatar" class:big style:background={colour} aria-hidden="true">{initials}</span>
+
+<style>
+	.avatar {
+		flex: none;
+		display: grid;
+		place-items: center;
+		width: 2.25rem;
+		height: 2.25rem;
+		border-radius: 50%;
+		font-weight: 600;
+		color: var(--hc-accent-fg);
+	}
+	.big {
+		width: 4rem;
+		height: 4rem;
+		font-size: 1.5rem;
+	}
+</style>
