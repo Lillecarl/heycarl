@@ -51,6 +51,8 @@
 	let deleting = $state(false);
 
 	let current = $derived(counters?.find((c) => c.id === open) ?? null);
+	// Only a counter that exists has a detail: a link to a deleted one shows the list.
+	let shown = $derived(current?.id ?? null);
 	let peak = $derived(Math.max(1, ...days.map((d) => Math.abs(d.total))));
 
 	const rpc = <T,>(fn: string, args: object) => data<T>(SCOPE, `rpc/${fn}`, json('POST', args));
@@ -76,7 +78,7 @@
 					`&zone=${encodeURIComponent(zone)}`
 			)
 		]);
-		if (open === id) {
+		if (shown === id) {
 			events = e;
 			days = [...d].reverse();
 		}
@@ -95,7 +97,7 @@
 		}
 		try {
 			await loadList();
-			if (open !== null) await loadDetail(open);
+			if (shown !== null) await loadDetail(shown);
 		} catch (e) {
 			error = String(e);
 		}
@@ -155,7 +157,7 @@
 
 	// A new counter in the hash starts a fresh detail view.
 	$effect(() => {
-		const id = open;
+		const id = shown;
 		untrack(() => {
 			events = [];
 			days = [];
@@ -188,6 +190,10 @@
 	<p class="muted">Loading…</p>
 {:else if !counters.length}
 	<p class="muted">No counters yet. Add one below.</p>
+{/if}
+
+{#if counters !== null && open !== null && !current}
+	<p>No such counter. <a href={hashHref()}>Show all counters</a></p>
 {/if}
 
 <ul class="plain counters">
