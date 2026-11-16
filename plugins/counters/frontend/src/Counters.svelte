@@ -1,9 +1,10 @@
 <svelte:options customElement={{ tag: 'heycarl-counters', extend: withBase }} />
 
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
 	import { withBase } from '@heycarl/sdk/base';
+	import { hashHref, hashId, leave } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
 
 	interface Counter {
@@ -34,13 +35,13 @@
 	const DAYS = 14;
 	const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-	let counters = $state<Counter[]>([]);
+	// null until the first answer.
+	let counters = $state<Counter[] | null>(null);
 	let error = $state<string | null>(null);
 	let name = $state('');
 	let unit = $state('');
 	let step = $state(1);
-	// The view lives in the hash (#/counter/12), so a link to a counter opens it.
-	let open = $state<number | null>(parse(location.hash));
+	let open = $derived(hashId('counter'));
 	let events = $state<Change[]>([]);
 	let days = $state<Day[]>([]);
 	let amount = $state<number | null>(null);
@@ -49,13 +50,8 @@
 	let edit = $state<{ name: string; unit: string; notes: string; step: number } | null>(null);
 	let deleting = $state(false);
 
-	let current = $derived(counters.find((c) => c.id === open) ?? null);
+	let current = $derived(counters?.find((c) => c.id === open) ?? null);
 	let peak = $derived(Math.max(1, ...days.map((d) => Math.abs(d.total))));
-
-	function parse(hash: string): number | null {
-		const m = /^#\/counter\/(\d+)$/.exec(hash);
-		return m ? Number(m[1]) : null;
-	}
 
 	const rpc = <T,>(fn: string, args: object) => data<T>(SCOPE, `rpc/${fn}`, json('POST', args));
 
@@ -63,12 +59,10 @@
 	// answer that arrives late would show a stale value.
 	let generation = 0;
 
-	async function load(): Promise<void> {
+	async function loadList(): Promise<void> {
 		const mine = ++generation;
 		const rows = await data<Counter[]>(SCOPE, 'counter_value?order=name,id');
-		if (mine !== generation) return;
-		counters = rows;
-		if (open !== null) await loadDetail(open);
+		if (mine === generation) counters = rows;
 	}
 
 	async function loadDetail(id: number): Promise<void> {
@@ -100,7 +94,8 @@
 			error = String(e);
 		}
 		try {
-			await load();
+			await loadList();
+			if (open !== null) await loadDetail(open);
 		} catch (e) {
 			error = String(e);
 		}
@@ -152,27 +147,25 @@
 
 	function remove(c: Counter): void {
 		deleting = false;
-		// Not location.hash = '': that reloads the page and aborts the DELETE.
 		run(async () => {
 			await data(SCOPE, `counter?id=eq.${c.id}`, { method: 'DELETE' });
-			location.hash = '#/';
+			leave();
 		});
 	}
 
-	function toggle(c: Counter): void {
-		location.hash = open === c.id ? '#/' : `#/counter/${c.id}`;
-	}
-
-	function show(id: number | null): void {
-		open = id;
-		events = [];
-		days = [];
-		edit = null;
-		deleting = false;
-		amount = null;
-		target = null;
-		if (id !== null) loadDetail(id).catch((e) => (error = String(e)));
-	}
+	// A new counter in the hash starts a fresh detail view.
+	$effect(() => {
+		const id = open;
+		untrack(() => {
+			events = [];
+			days = [];
+			edit = null;
+			deleting = false;
+			amount = null;
+			target = null;
+			if (id !== null) loadDetail(id).catch((e) => (error = String(e)));
+		});
+	});
 
 	const signed = (n: number) => (n > 0 ? `+${n}` : String(n));
 	const when = (at: string) =>
@@ -185,51 +178,61 @@
 		});
 
 	onMount(() => {
-		load().catch((e) => (error = String(e)));
-		const onHash = () => show(parse(location.hash));
-		addEventListener('hashchange', onHash);
-		return () => removeEventListener('hashchange', onHash);
+		loadList().catch((e) => (error = String(e)));
 	});
 </script>
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-<ul class="counters">
-	{#each counters as c (c.id)}
+{#if counters === null}
+	<p class="muted">Loading…</p>
+{:else if !counters.length}
+	<p class="muted">No counters yet. Add one below.</p>
+{/if}
+
+<ul class="plain counters">
+	{#each counters ?? [] as c (c.id)}
 		<li class="card" class:open={open === c.id}>
-			<button class="minus big" aria-label="Minus {c.step} on {c.name}" onclick={() => bump(c, -1)}
+			<button class="big" aria-label="Minus {c.step} on {c.name}" onclick={() => bump(c, -1)}
 				>−</button
 			>
-			<button class="middle" aria-expanded={open === c.id} onclick={() => toggle(c)}>
+			<a
+				class="middle"
+				href={open === c.id ? hashHref() : hashHref('counter', c.id)}
+				aria-expanded={open === c.id}
+			>
 				<span class="name">{c.name}</span>
 				<span class="value">{c.value}</span>
-				{#if c.unit}<span class="unit">{c.unit}</span>{/if}
-			</button>
-			<button class="plus big" aria-label="Plus {c.step} on {c.name}" onclick={() => bump(c, 1)}
+				{#if c.unit}<span class="muted">{c.unit}</span>{/if}
+			</a>
+			<button class="big primary" aria-label="Plus {c.step} on {c.name}" onclick={() => bump(c, 1)}
 				>+</button
 			>
 		</li>
 		{#if open === c.id && current}
 			<li class="detail">
-				{#if current.notes}<p class="notes">{current.notes}</p>{/if}
+				<h2 class="visually-hidden">{c.name}</h2>
+				{#if current.notes}<p class="muted notes">{current.notes}</p>{/if}
 
-				<form onsubmit={(e) => addAmount(e, c)}>
+				<form class="actions" onsubmit={(e) => addAmount(e, c)}>
 					<input
 						type="number"
 						inputmode="numeric"
 						step="1"
+						aria-label="Amount"
 						placeholder="Amount, e.g. -3"
 						bind:value={amount}
 					/>
-					<input placeholder="Note" maxlength="500" bind:value={note} />
+					<input aria-label="Note" placeholder="Note" maxlength="500" bind:value={note} />
 					<button type="submit">Add</button>
 				</form>
 
-				<form onsubmit={(e) => setTo(e, c)}>
+				<form class="actions" onsubmit={(e) => setTo(e, c)}>
 					<input
 						type="number"
 						inputmode="numeric"
 						step="1"
+						aria-label="Set to"
 						placeholder="Set to"
 						bind:value={target}
 					/>
@@ -245,12 +248,13 @@
 						onclick={() => run(() => rpc('undo_last', { counter_id: c.id }))}>Undo last</button
 					>
 					<button
+						aria-expanded={edit !== null}
 						onclick={() =>
 							(edit = edit ? null : { name: c.name, unit: c.unit, notes: c.notes, step: c.step })}
 						>Edit</button
 					>
 					{#if deleting}
-						<button class="danger" onclick={() => remove(c)}>Delete for real</button>
+						<button class="danger" onclick={() => remove(c)}>Delete “{c.name}”</button>
 						<button onclick={() => (deleting = false)}>Keep</button>
 					{:else}
 						<button onclick={() => (deleting = true)}>Delete</button>
@@ -270,10 +274,10 @@
 				{/if}
 
 				<h3>Last {DAYS} days</h3>
-				<ol class="days">
+				<ol class="plain days">
 					{#each days as d (d.day)}
 						<li>
-							<span class="day">{d.day.slice(5)}</span>
+							<span class="muted">{d.day.slice(5)}</span>
 							<span class="bar"
 								><span
 									class:down={d.total < 0}
@@ -287,12 +291,12 @@
 
 				<h3>Recent</h3>
 				{#if events.length}
-					<ol class="events">
+					<ol class="plain events">
 						{#each events as e (e.id)}
 							<li>
 								<span class="delta" class:down={e.delta < 0}>{signed(e.delta)}</span>
 								<span class="note">{e.note}</span>
-								<time datetime={e.at}>{when(e.at)}</time>
+								<time class="muted" datetime={e.at}>{when(e.at)}</time>
 							</li>
 						{/each}
 					</ol>
@@ -306,57 +310,20 @@
 	{/each}
 </ul>
 
-<form class="new" onsubmit={create}>
-	<input bind:value={name} placeholder="New counter" maxlength="100" required />
-	<input bind:value={unit} placeholder="Unit" maxlength="50" class="short" />
-	<label class="short">Step <input type="number" inputmode="numeric" min="1" bind:value={step} /></label>
+<form class="actions new" onsubmit={create}>
+	<input
+		bind:value={name}
+		aria-label="New counter name"
+		placeholder="New counter"
+		maxlength="100"
+		required
+	/>
+	<input bind:value={unit} aria-label="Unit" placeholder="Unit" maxlength="50" class="short" />
+	<label class="step">Step <input type="number" inputmode="numeric" min="1" bind:value={step} /></label>
 	<button type="submit">Add</button>
 </form>
 
 <style>
-	:host {
-		display: block;
-	}
-	button,
-	input,
-	textarea {
-		font: inherit;
-		font-size: max(1rem, 16px);
-		color: inherit;
-	}
-	input,
-	textarea {
-		min-height: 3rem;
-		padding: 0 0.75rem;
-		box-sizing: border-box;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-		min-width: 0;
-	}
-	textarea {
-		padding: 0.5rem 0.75rem;
-		min-height: 5rem;
-	}
-	button {
-		min-height: 3rem;
-		min-width: 3rem;
-		padding: 0 1rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-		cursor: pointer;
-		touch-action: manipulation;
-	}
-	button:disabled {
-		opacity: 0.4;
-	}
-	ul,
-	ol {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-	}
 	.counters {
 		display: grid;
 		gap: 0.75rem;
@@ -375,10 +342,6 @@
 		user-select: none;
 		-webkit-user-select: none;
 	}
-	.plus {
-		border-color: var(--hc-accent, teal);
-		color: var(--hc-accent, teal);
-	}
 	.middle {
 		display: flex;
 		flex-direction: column;
@@ -386,9 +349,13 @@
 		justify-content: center;
 		padding: 0.25rem 0.5rem;
 		overflow: hidden;
+		color: inherit;
+		text-decoration: none;
+		border: 1px solid var(--hc-muted);
+		border-radius: 0.5rem;
 	}
 	.open .middle {
-		border-color: var(--hc-accent, teal);
+		border-color: var(--hc-accent);
 	}
 	.name {
 		max-width: 100%;
@@ -401,43 +368,27 @@
 		font-weight: bold;
 		font-variant-numeric: tabular-nums;
 	}
-	.unit,
-	.muted,
-	.notes,
-	time,
-	.day {
-		color: var(--hc-muted, gray);
-	}
 	.detail {
 		display: grid;
 		gap: 0.75rem;
 		padding: 0 0 1rem;
-		border-bottom: 1px solid var(--hc-muted, gray);
+		border-bottom: 1px solid var(--hc-border);
 	}
-	form,
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
+	.notes {
+		margin: 0;
 	}
-	form input {
+	form.actions input {
 		flex: 1 1 8rem;
 	}
 	.edit {
+		display: flex;
 		flex-direction: column;
+		gap: 0.5rem;
 	}
 	.edit label {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
-	}
-	.danger {
-		border-color: var(--hc-error, red);
-		color: var(--hc-error, red);
-	}
-	h3 {
-		margin: 0.5rem 0 0;
-		font-size: 1rem;
 	}
 	.days li {
 		display: grid;
@@ -450,10 +401,10 @@
 		display: block;
 		height: 0.75rem;
 		border-radius: 0.25rem;
-		background: var(--hc-accent, teal);
+		background: var(--hc-accent);
 	}
 	.bar .down {
-		background: var(--hc-error, red);
+		background: var(--hc-error);
 	}
 	.total,
 	.delta {
@@ -468,13 +419,16 @@
 	}
 	.delta {
 		font-weight: bold;
-		color: var(--hc-accent, teal);
+		color: var(--hc-accent);
 	}
 	.delta.down {
-		color: var(--hc-error, red);
+		color: var(--hc-error);
 	}
 	.note {
 		overflow-wrap: anywhere;
+	}
+	.events time {
+		font-size: 0.875rem;
 	}
 	.new {
 		margin-top: 1.5rem;
@@ -482,20 +436,14 @@
 	.new .short {
 		flex: 0 1 6rem;
 	}
-	.new label.short {
+	.step {
 		display: flex;
 		align-items: center;
 		gap: 0.25rem;
 		flex: 0 1 8rem;
 	}
-	.new label.short input {
+	.step input {
 		width: 4rem;
 		flex: 1;
-	}
-	.error {
-		color: var(--hc-error, red);
-	}
-	.events time {
-		font-size: 0.875rem;
 	}
 </style>
