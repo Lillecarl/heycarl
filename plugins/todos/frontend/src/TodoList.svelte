@@ -4,14 +4,10 @@
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
 	import { withBase } from '@heycarl/sdk/base';
+	import { hashHref, hashId, leave } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
-	import TagChips from '@heycarl/sdk/TagChips.svelte';
+	import TagChips, { chipColor, type Tag } from '@heycarl/sdk/TagChips.svelte';
 
-	interface Tag {
-		id: number;
-		name: string;
-		color: string | null;
-	}
 	interface Todo {
 		id: number;
 		parent_id: number | null;
@@ -28,9 +24,11 @@
 
 	const FOLDED_KEY = 'heycarl.todos.folded';
 
-	let todos = $state<Todo[]>([]);
+	// null until the first answer.
+	let todos = $state<Todo[] | null>(null);
 	let lists = $state<List[]>([]);
-	let current = $state<number | null>(parse(location.hash));
+	// The open list lives in the hash (#/list/3); no list is the Inbox.
+	let current = $derived(hashId('list'));
 	let title = $state('');
 	let error = $state<string | null>(null);
 	let open = $state<number | null>(null);
@@ -38,9 +36,13 @@
 	let subtitle = $state('');
 	let deleting = $state<number | null>(null);
 	let folded = $state<Set<number>>(readFolded());
-	let naming = $state<'new' | 'rename' | null>(null);
+	// The naming form and the armed delete belong to the list they opened on:
+	// on another list they are closed, so a confirm never carries over.
+	let namingOn = $state<{ list: number | null; mode: 'new' | 'rename' } | null>(null);
+	let naming = $derived(namingOn?.list === current ? namingOn.mode : null);
 	let listName = $state('');
-	let dropping = $state(false);
+	let droppingOn = $state<number | null>(null);
+	let dropping = $derived(current !== null && droppingOn === current);
 	let tags = $state<Tag[]>([]);
 	// False when this Hey Carl runs no tags plugin.
 	let haveTags = $state(false);
@@ -48,20 +50,16 @@
 	// The ids carrying the filter tag; null shows every todo.
 	let tagged = $state<Set<number> | null>(null);
 
+	let all = $derived(todos ?? []);
 	let shown = $derived(
-		todos.filter((t) => t.list_id === current && (tagged === null || tagged.has(t.id)))
+		all.filter((t) => t.list_id === current && (tagged === null || tagged.has(t.id)))
 	);
 	// Every todo the list holds; a delete takes them all, tag filter or not.
-	let inList = $derived(todos.filter((t) => t.list_id === current).length);
+	let inList = $derived(all.filter((t) => t.list_id === current).length);
 	let filterTag = $derived(tags.find((t) => t.id === filter) ?? null);
 	let children = $derived(childrenOf(shown));
-	let openCount = $derived(countOpen(todos));
+	let openCount = $derived(countOpen(all));
 	let currentList = $derived(lists.find((l) => l.id === current) ?? null);
-
-	function parse(hash: string): number | null {
-		const m = /^#\/list\/(\d+)$/.exec(hash);
-		return m ? Number(m[1]) : null;
-	}
 
 	function countOpen(list: Todo[]): Map<number | null, number> {
 		const out = new Map<number | null, number>();
@@ -140,16 +138,10 @@
 		run(loadTags);
 	}
 
-	const chip = (color: string | null) => (color ? `var(--hc-${color})` : 'var(--hc-muted, gray)');
-
-	function pick(id: number | null): void {
-		location.hash = id === null ? '#/' : `#/list/${id}`;
-	}
-
 	function startNaming(mode: 'new' | 'rename'): void {
-		naming = naming === mode ? null : mode;
+		namingOn = naming === mode ? null : { list: current, mode };
 		listName = mode === 'rename' ? (currentList?.name ?? '') : '';
-		dropping = false;
+		droppingOn = null;
 	}
 
 	function saveList(event: SubmitEvent): void {
@@ -157,7 +149,7 @@
 		const name = listName.trim();
 		if (!name) return;
 		const mode = naming;
-		naming = null;
+		namingOn = null;
 		run(async () => {
 			if (mode === 'rename' && current !== null) {
 				await data('todos', `list?id=eq.${current}`, json('PATCH', { name }));
@@ -168,20 +160,22 @@
 				'list',
 				json('POST', { name }, 'return=representation')
 			);
-			pick(made.id);
+			location.hash = hashHref('list', made.id);
 		});
 	}
 
 	function dropList(): void {
 		if (current === null) return;
 		if (!dropping) {
-			dropping = true;
+			droppingOn = current;
 			return;
 		}
 		const id = current;
-		dropping = false;
-		pick(null);
-		run(() => data('todos', `list?id=eq.${id}`, { method: 'DELETE' }));
+		droppingOn = null;
+		run(async () => {
+			await data('todos', `list?id=eq.${id}`, { method: 'DELETE' });
+			leave();
+		});
 	}
 
 	function moveTo(todo: Todo, value: string): void {
@@ -264,14 +258,6 @@
 
 	onMount(() => {
 		load().catch((e) => (error = String(e)));
-		const onHash = () => {
-			current = parse(location.hash);
-			open = null;
-			naming = null;
-			dropping = false;
-		};
-		addEventListener('hashchange', onHash);
-		return () => removeEventListener('hashchange', onHash);
 	});
 </script>
 
@@ -282,34 +268,36 @@
 		<div class="row" class:done={todo.done_at}>
 			{#if kids.length}
 				<button
-					class="icon fold"
-					aria-label={shut ? 'Show subtasks' : 'Hide subtasks'}
+					class="icon"
+					aria-label="Subtasks of {todo.title}"
 					aria-expanded={!shut}
 					onclick={() => fold(todo.id)}>{shut ? '▸' : '▾'}</button
 				>
 			{:else}
-				<span class="icon"></span>
+				<span></span>
 			{/if}
 			<input
 				type="checkbox"
-				aria-label="Done"
+				aria-label="Done: {todo.title}"
 				checked={!!todo.done_at}
 				onchange={() => toggle(todo)}
 			/>
-			<button
-				class="title"
-				aria-expanded={open === todo.id}
-				onclick={() => (open = open === todo.id ? null : todo.id)}
-			>
+			<button class="title" aria-expanded={open === todo.id} onclick={() => (open = open === todo.id ? null : todo.id)}>
 				<span class="text">{todo.title}</span>
-				{#if shut}<span class="count">{count(todo.id)}</span>{/if}
-				{#if todo.notes}<span class="count" aria-label="Has notes">✎</span>{/if}
+				{#if shut}<span class="count">{count(todo.id)}<span class="visually-hidden"> subtasks</span></span>{/if}
+				{#if todo.notes}<span class="count" aria-hidden="true">✎</span><span class="visually-hidden">, has notes</span>{/if}
 			</button>
-			<button class="icon" aria-label="Add subtask" onclick={() => startSub(todo)}>+</button>
+			<button
+				class="icon"
+				aria-label="Add a subtask to {todo.title}"
+				aria-expanded={adding === todo.id}
+				onclick={() => startSub(todo)}>+</button
+			>
 		</div>
 		{#if open === todo.id}
 			<div class="detail">
 				<textarea
+					aria-label="Notes for {todo.title}"
 					placeholder="Notes"
 					value={todo.notes}
 					onblur={(e) => saveNotes(todo, e.currentTarget.value)}
@@ -326,40 +314,46 @@
 				{#if lists.length}
 					<label class="move">
 						{todo.parent_id === null ? 'Move to' : 'Move out to'}
-						<select onchange={(e) => moveTo(todo, e.currentTarget.value)}>
-							<option value="" selected={todo.list_id === null && todo.parent_id === null}
-								>Inbox</option
-							>
+						<select
+							value={todo.parent_id === null ? String(todo.list_id ?? '') : '-'}
+							onchange={(e) => moveTo(todo, e.currentTarget.value)}
+						>
+							{#if todo.parent_id !== null}<option value="-" disabled>Choose a list</option>{/if}
+							<option value="">Inbox</option>
 							{#each lists as l (l.id)}
-								<option value={l.id} selected={todo.list_id === l.id && todo.parent_id === null}
-									>{l.name}</option
-								>
+								<option value={String(l.id)}>{l.name}</option>
 							{/each}
-							{#if todo.parent_id !== null}<option value="-" disabled selected>…</option>{/if}
 						</select>
 					</label>
 				{/if}
 				<div class="actions">
 					{#if deleting === todo.id}
 						<button class="danger" onclick={() => remove(todo)}
-							>Delete with {count(todo.id)} subtasks</button
+							>Delete “{todo.title}” with {count(todo.id)} subtasks</button
 						>
 						<button onclick={() => (deleting = null)}>Keep</button>
 					{:else}
-						<button class="danger" onclick={() => remove(todo)}>Delete</button>
+						<button class="danger" aria-label="Delete {todo.title}" onclick={() => remove(todo)}
+						>Delete</button
+					>
 					{/if}
 				</div>
 			</div>
 		{/if}
 		{#if adding === todo.id}
-			<form class="sub" onsubmit={(e) => addSub(e, todo)}>
-				<!-- svelte-ignore a11y_autofocus -->
-				<input bind:value={subtitle} placeholder="New subtask" maxlength="500" autofocus />
+			<form class="actions sub" onsubmit={(e) => addSub(e, todo)}>
+				<input
+					bind:value={subtitle}
+					aria-label="New subtask of {todo.title}"
+					placeholder="New subtask"
+					maxlength="500"
+					{@attach (el) => el.focus()}
+				/>
 				<button type="submit">Add</button>
 			</form>
 		{/if}
 		{#if kids.length && !shut}
-			<ul>
+			<ul class="plain">
 				{#each kids as kid (kid.id)}
 					{@render node(kid)}
 				{/each}
@@ -368,42 +362,50 @@
 	</li>
 {/snippet}
 
-<nav class="lists" aria-label="Lists">
-	<button class="list" aria-current={current === null} onclick={() => pick(null)}>
+<nav class="strip" aria-label="Lists">
+	<a class="list" href={hashHref()} aria-current={current === null ? 'page' : undefined}>
 		Inbox <span class="count">{openCount.get(null) ?? 0}</span>
-	</button>
+	</a>
 	{#each lists as l (l.id)}
-		<button class="list" aria-current={current === l.id} onclick={() => pick(l.id)}>
+		<a
+			class="list"
+			href={hashHref('list', l.id)}
+			aria-current={current === l.id ? 'page' : undefined}
+		>
 			{l.name} <span class="count">{openCount.get(l.id) ?? 0}</span>
-		</button>
+		</a>
 	{/each}
-	<button class="list" aria-label="New list" onclick={() => startNaming('new')}>+ List</button>
+	<button class="list" aria-expanded={naming === 'new'} onclick={() => startNaming('new')}
+		>+ List</button
+	>
 </nav>
 
 {#if tags.length}
-	<nav class="filter" aria-label="Filter by tag">
+	<div class="strip" role="group" aria-label="Filter by tag">
 		{#each tags as t (t.id)}
 			<button
 				class="tag"
 				aria-pressed={filter === t.id}
-				style:--chip={chip(t.color)}
+				style:--chip={chipColor(t.color)}
 				onclick={() => filterBy(t.id)}>{t.name}</button
 			>
 		{/each}
 		{#if filterTag}
 			<button class="tag clear" onclick={() => filterBy(null)}>Show all</button>
 		{/if}
-	</nav>
+	</div>
 {/if}
 
 {#if currentList}
 	<div class="actions list-actions">
-		<button onclick={() => startNaming('rename')}>Rename</button>
+		<button aria-expanded={naming === 'rename'} onclick={() => startNaming('rename')}
+			>Rename</button
+		>
 		{#if dropping}
 			<button class="danger" onclick={dropList}
 				>Delete “{currentList.name}” with {inList} todos</button
 			>
-			<button onclick={() => (dropping = false)}>Keep</button>
+			<button onclick={() => (droppingOn = null)}>Keep</button>
 		{:else}
 			<button class="danger" onclick={dropList}>Delete list</button>
 		{/if}
@@ -411,21 +413,22 @@
 {/if}
 
 {#if naming}
-	<form class="naming" onsubmit={saveList}>
-		<!-- svelte-ignore a11y_autofocus -->
+	<form class="actions naming" onsubmit={saveList}>
 		<input
 			bind:value={listName}
+			aria-label={naming === 'new' ? 'New list name' : 'List name'}
 			placeholder={naming === 'new' ? 'New list, e.g. Shopping' : 'List name'}
 			maxlength="200"
-			autofocus
+			{@attach (el) => el.focus()}
 		/>
 		<button type="submit">{naming === 'new' ? 'Make' : 'Save'}</button>
 	</form>
 {/if}
 
-<form onsubmit={add}>
+<form class="actions" onsubmit={add}>
 	<input
 		bind:value={title}
+		aria-label={currentList ? `New todo in ${currentList.name}` : 'New todo'}
 		placeholder={currentList ? `New todo in ${currentList.name}` : 'New todo'}
 		maxlength="500"
 	/>
@@ -434,52 +437,29 @@
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-<ul class="tree">
+{#if todos === null}
+	<p class="muted">Loading…</p>
+{:else if !shown.length}
+	<p class="muted">{filterTag ? `Nothing here carries “${filterTag.name}”.` : 'Nothing to do here.'}</p>
+{/if}
+
+<ul class="plain tree">
 	{#each children.get(null) ?? [] as todo (todo.id)}
 		{@render node(todo)}
 	{/each}
 </ul>
 
 <style>
+	/* The fold button and the checkbox: the detail lines up under the title. */
 	:host {
-		display: block;
+		--lead: 5rem;
 	}
-	button,
-	input,
-	textarea {
-		font: inherit;
-		font-size: max(1rem, 16px);
-		color: inherit;
-	}
-	button {
-		min-height: 3rem;
-		padding: 0 1rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-		cursor: pointer;
-	}
-	form {
-		display: flex;
-		gap: 0.5rem;
-	}
-	form input {
+	form.actions input {
 		flex: 1;
-		min-width: 0;
-		min-height: 3rem;
-		padding: 0 0.75rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-	}
-	ul {
-		list-style: none;
-		padding: 0;
-		margin: 0;
 	}
 	ul ul {
-		padding-left: 1.25rem;
-		border-left: 1px solid color-mix(in srgb, var(--hc-muted, gray) 30%, transparent);
+		padding-left: 0.75rem;
+		border-left: 1px solid var(--hc-border);
 		margin-left: 1.5rem;
 	}
 	.tree {
@@ -490,25 +470,12 @@
 		grid-template-columns: 3rem 2rem 1fr 3rem;
 		align-items: center;
 		min-height: 3rem;
-		border-bottom: 1px solid color-mix(in srgb, var(--hc-muted, gray) 30%, transparent);
-	}
-	.row input[type='checkbox'] {
-		width: 1.25rem;
-		height: 1.25rem;
-		margin: 0;
-	}
-	.icon {
-		width: 3rem;
-		padding: 0;
-		border: none;
-		font-size: 1.25rem;
-		color: var(--hc-muted, gray);
+		border-bottom: 1px solid var(--hc-border);
 	}
 	.title {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		min-width: 0;
 		padding: 0 0.25rem;
 		border: none;
 		text-align: left;
@@ -521,7 +488,7 @@
 		font-weight: bold;
 	}
 	.count {
-		color: var(--hc-muted, gray);
+		color: var(--hc-muted);
 		font-size: 0.875rem;
 		font-variant-numeric: tabular-nums;
 	}
@@ -532,29 +499,12 @@
 	.detail {
 		display: grid;
 		gap: 0.5rem;
-		padding: 0.5rem 0 1rem 5rem;
-	}
-	.detail textarea {
-		min-height: 5rem;
-		padding: 0.5rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-		resize: vertical;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-	.danger {
-		border-color: var(--hc-error, red);
-		color: var(--hc-error, red);
+		padding: 0.5rem 0 1rem var(--lead);
 	}
 	.sub {
-		padding: 0.5rem 0 0.5rem 5rem;
+		padding: 0.5rem 0 0.5rem var(--lead);
 	}
-	.lists {
+	.strip {
 		display: flex;
 		gap: 0.5rem;
 		overflow-x: auto;
@@ -566,25 +516,24 @@
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
+		min-height: 3rem;
+		padding: 0 1rem;
 		white-space: nowrap;
+		color: inherit;
+		text-decoration: none;
+		border: 1px solid var(--hc-muted);
+		border-radius: 0.5rem;
 	}
-	.list[aria-current='true'] {
-		border-color: var(--hc-accent, teal);
-		color: var(--hc-accent, teal);
+	.list[aria-current='page'] {
+		border-color: var(--hc-accent);
+		color: var(--hc-accent);
 		font-weight: bold;
-	}
-	.filter {
-		display: flex;
-		gap: 0.5rem;
-		overflow-x: auto;
-		padding-bottom: 0.5rem;
-		margin-bottom: 0.5rem;
 	}
 	.tag {
 		flex: none;
 		white-space: nowrap;
 		border-radius: 999px;
-		border-color: var(--chip, var(--hc-muted, gray));
+		border-color: var(--chip);
 	}
 	.tag[aria-pressed='true'] {
 		background: color-mix(in oklab, var(--chip) 25%, transparent);
@@ -601,18 +550,5 @@
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-	}
-	.move select {
-		font: inherit;
-		font-size: max(1rem, 16px);
-		color: inherit;
-		min-height: 3rem;
-		padding: 0 0.5rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: var(--hc-bg, transparent);
-	}
-	.error {
-		color: var(--hc-error, red);
 	}
 </style>
