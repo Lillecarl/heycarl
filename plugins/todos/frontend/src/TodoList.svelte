@@ -50,6 +50,8 @@
 	let shown = $derived(
 		todos.filter((t) => t.list_id === current && (tagged === null || tagged.has(t.id)))
 	);
+	// Every todo the list holds; a delete takes them all, tag filter or not.
+	let inList = $derived(todos.filter((t) => t.list_id === current).length);
 	let filterTag = $derived(tags.find((t) => t.id === filter) ?? null);
 	let children = $derived(childrenOf(shown));
 	let openCount = $derived(countOpen(todos));
@@ -398,7 +400,7 @@
 		<button onclick={() => startNaming('rename')}>Rename</button>
 		{#if dropping}
 			<button class="danger" onclick={dropList}
-				>Delete “{currentList.name}” with {shown.length} todos</button
+				>Delete “{currentList.name}” with {inList} todos</button
 			>
 			<button onclick={() => (dropping = false)}>Keep</button>
 		{:else}
