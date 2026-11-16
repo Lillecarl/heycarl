@@ -1,9 +1,10 @@
 <svelte:options customElement={{ tag: 'heycarl-calendar', extend: withBase }} />
 
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { api, data, json } from '@heycarl/sdk';
 	import { withBase } from '@heycarl/sdk/base';
+	import { hashHref, hashId } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
 
 	interface Account {
@@ -49,20 +50,16 @@
 	let configured = $state<boolean | null>(null);
 	let account = $state<Account | null>(null);
 	let calendars = $state<Cal[]>([]);
-	let events = $state<Ev[]>([]);
+	// null until the first answer, so "Nothing in the next days" never shows early.
+	let events = $state<Ev[] | null>(null);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let leaving = $state(false);
-	let open = $state<number | null>(parse(location.hash));
+	let open = $derived(hashId('event'));
 	let detail = $state<Ev | null>(null);
 	let people = $state<Person[]>([]);
 
-	let days = $derived(group(events));
-
-	function parse(hash: string): number | null {
-		const m = /^#\/event\/(\d+)$/.exec(hash);
-		return m ? Number(m[1]) : null;
-	}
+	let days = $derived(group(events ?? []));
 
 	// An all-day event belongs to its date; a timed one to the local day it starts.
 	function dayOf(e: Ev): string {
@@ -95,7 +92,6 @@
 			`agenda?ends_at=gt.${now.toISOString()}&starts_at=lt.${until.toISOString()}` +
 				'&order=starts_at,id&limit=500'
 		);
-		if (open !== null) await loadDetail(open);
 	}
 
 	async function loadDetail(id: number): Promise<void> {
@@ -158,12 +154,15 @@
 		run(() => api(`${PLUGIN}/calendars/${c.id}`, json('POST', { selected })));
 	}
 
-	function show(id: number | null): void {
-		open = id;
-		detail = null;
-		people = [];
-		if (id !== null) loadDetail(id).catch((e) => (error = String(e)));
-	}
+	// The hash names the open event; its detail loads when it changes.
+	$effect(() => {
+		const id = open;
+		untrack(() => {
+			detail = null;
+			people = [];
+			if (id !== null) loadDetail(id).catch((e) => (error = String(e)));
+		});
+	});
 
 	const dayTitle = (d: string) =>
 		new Date(d + 'T12:00:00').toLocaleDateString(undefined, {
@@ -183,9 +182,6 @@
 
 	onMount(() => {
 		load().catch((e) => (error = String(e)));
-		const onHash = () => show(parse(location.hash));
-		addEventListener('hashchange', onHash);
-		return () => removeEventListener('hashchange', onHash);
 	});
 </script>
 
@@ -218,7 +214,7 @@
 		<div class="actions">
 			<button disabled={busy} onclick={syncNow}>Sync now</button>
 			{#if leaving}
-				<button class="danger" onclick={disconnect}>Disconnect for real</button>
+				<button class="danger" onclick={disconnect}>Disconnect Google Calendar</button>
 				<button onclick={() => (leaving = false)}>Keep</button>
 			{:else}
 				<button onclick={() => (leaving = true)}>Disconnect</button>
@@ -226,7 +222,7 @@
 		</div>
 		<details>
 			<summary>Calendars</summary>
-			<ul class="calendars">
+			<ul class="plain calendars">
 				{#each calendars as c (c.id)}
 					<li>
 						<label>
@@ -236,7 +232,7 @@
 								disabled={busy}
 								onchange={(e) => choose(c, e.currentTarget.checked)}
 							/>
-							<span class="dot" style:background={c.color || 'gray'}></span>
+							<span class="dot" style:background={c.color || 'var(--hc-muted)'}></span>
 							{c.name}
 						</label>
 					</li>
@@ -245,20 +241,22 @@
 		</details>
 	</section>
 
-	{#if days.length}
+	{#if events === null}
+		<p class="muted">Loading…</p>
+	{:else if days.length}
 		{#each days as [day, list] (day)}
-			<h3>{dayTitle(day)}</h3>
-			<ul class="events">
+			<h2>{dayTitle(day)}</h2>
+			<ul class="plain events">
 				{#each list as e (e.id)}
 					<li>
 						<a
 							class="row"
-							href={open === e.id ? '#/' : `#/event/${e.id}`}
+							href={open === e.id ? hashHref() : hashHref('event', e.id)}
 							class:open={open === e.id}
 							aria-expanded={open === e.id}
 						>
-							<span class="dot" style:background={e.color || 'gray'}></span>
-							<span class="when">{e.all_day ? 'All day' : time(e.starts_at)}</span>
+							<span class="dot" style:background={e.color || 'var(--hc-muted)'}></span>
+							<span class="when muted">{e.all_day ? 'All day' : time(e.starts_at)}</span>
 							<span class="title">{e.title || '(no title)'}</span>
 						</a>
 						{#if open === e.id && detail}
@@ -298,58 +296,19 @@
 {/if}
 
 <style>
-	:host {
-		display: block;
-	}
-	button {
-		font: inherit;
-		font-size: max(1rem, 16px);
-		color: inherit;
-		min-height: 3rem;
-		padding: 0 1rem;
-		border: 1px solid var(--hc-muted, gray);
-		border-radius: 0.5rem;
-		background: transparent;
-		cursor: pointer;
-	}
-	button:disabled {
-		opacity: 0.4;
-	}
-	.primary {
-		border-color: var(--hc-accent, teal);
-		color: var(--hc-accent, teal);
-	}
-	.danger {
-		border-color: var(--hc-error, red);
-		color: var(--hc-error, red);
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
 	.status,
 	.connect {
 		display: grid;
 		gap: 0.5rem;
 		margin-bottom: 1rem;
 	}
-	ul {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-	}
 	.calendars li label {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		min-height: 2.5rem;
+		min-height: 3rem;
 	}
-	.calendars input {
-		width: 1.25rem;
-		height: 1.25rem;
-	}
-	h3 {
+	h2 {
 		margin: 1rem 0 0.25rem;
 		font-size: 1rem;
 	}
@@ -361,7 +320,7 @@
 		min-height: 3rem;
 		color: inherit;
 		text-decoration: none;
-		border-bottom: 1px solid color-mix(in srgb, var(--hc-muted, gray) 30%, transparent);
+		border-bottom: 1px solid var(--hc-border);
 	}
 	.events a.row.open {
 		font-weight: bold;
@@ -374,10 +333,6 @@
 	}
 	.when {
 		white-space: nowrap;
-	}
-	.when,
-	.muted {
-		color: var(--hc-muted, gray);
 		font-variant-numeric: tabular-nums;
 	}
 	.title {
@@ -393,11 +348,5 @@
 	}
 	.detail .description {
 		white-space: pre-wrap;
-	}
-	.detail a {
-		color: var(--hc-accent, teal);
-	}
-	.error {
-		color: var(--hc-error, red);
 	}
 </style>
