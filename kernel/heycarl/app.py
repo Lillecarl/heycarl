@@ -201,6 +201,25 @@ def _refuse(status_code: int, message: str) -> Response:
     )
 
 
+def renamed_path(rename: migrations.PluginRename, rest: str) -> str:
+    page = rest.replace(f"heycarl-{rename.old}", f"heycarl-{rename.new}", 1)
+    return f"/p/{rename.new}/{page}"
+
+
+def _renamed_page(
+    rename: migrations.PluginRename,
+) -> Callable[[Request, str], Coroutine[Any, Any, Response]]:
+    # The fragment (#/contact/1) never reaches the server; browsers keep it
+    # across a redirect.
+    async def redirect(request: Request, rest: str) -> Response:
+        target = renamed_path(rename, rest)
+        if request.url.query:
+            target += "?" + request.url.query
+        return RedirectResponse(target, status_code=status.HTTP_308_PERMANENT_REDIRECT)
+
+    return redirect
+
+
 class SubscribeKeys(BaseModel):
     p256dh: str
     auth: str
@@ -474,6 +493,14 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
                 ),
                 name=f"plugin-{plugin.name}",
             )
+
+    for rename in migrations.RENAMES:
+        app.add_api_route(
+            f"/p/{rename.old}/{{rest:path}}",
+            _renamed_page(rename),
+            methods=["GET", "HEAD"],
+            include_in_schema=False,
+        )
 
     static = config.static_dir
     if static is not None:
