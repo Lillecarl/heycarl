@@ -22,13 +22,14 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from . import (
     apppasswords,
     dav,
+    errors,
     mcpserver,
     migrations,
     oauth,
@@ -276,6 +277,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             tg.cancel_scope.cancel()
 
     app = FastAPI(title="Hey Carl", lifespan=lifespan, docs_url=None, redoc_url=None)
+    errors.install(app)
     index_html = (
         (config.static_dir / "index.html").read_text()
         if config.static_dir is not None
@@ -309,10 +311,10 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             request.app.state.pending_login_limit,
         )
         if attempt is None:
-            return JSONResponse(
-                {"detail": "too many sign-ins in progress; try again soon"},
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                headers={"retry-after": "60", "cache-control": "no-store"},
+            return errors.response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "too many sign-ins in progress; try again soon",
+                headers={"retry-after": "60"},
             )
         client: oidc.Client = request.app.state.oidc
         url = oidc.authorization_url(
@@ -391,10 +393,14 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
     async def push_key(kernel: KernelDep, _: CallerDep) -> dict[str, str]:
         return {"key": push.application_server_key(kernel.pusher.key)}
 
-    @app.post("/api/push/subscribe", status_code=status.HTTP_204_NO_CONTENT)
+    @app.post(
+        "/api/push/subscribe",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_model=None,
+    )
     async def push_subscribe(
         body: SubscribeRequest, request: Request, kernel: KernelDep, who: CallerDep
-    ) -> None:
+    ) -> Response | None:
         if not push.is_push_service(body.endpoint, kernel.pusher.hosts):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "not a push service")
         headers = postgrest.request_headers(
@@ -422,7 +428,12 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
             ),
         )
         if r.is_error:
-            raise HTTPException(r.status_code, r.text)
+            return Response(
+                content=r.content,
+                status_code=r.status_code,
+                headers=postgrest.response_headers(r.headers),
+            )
+        return None
 
     @app.post("/api/push/test")
     async def push_test(kernel: KernelDep, who: CallerDep) -> dict[str, int]:

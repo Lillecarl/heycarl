@@ -10,14 +10,13 @@ from __future__ import annotations
 import base64
 import enum
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Final
 from urllib.parse import quote, urlsplit
 
-from . import apppasswords, sessions
+from . import apppasswords, errors, sessions
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -251,7 +250,7 @@ class AccessMiddleware:
         path: str = scope["path"]
         access = access_for(path)
         if access is None:
-            await self._reply(send_with_headers, 400, {"detail": "bad path"})
+            await self._reply(send_with_headers, 400, "bad path")
             return
         if access is Access.DAV:
             await self._dav(scope, receive, send_with_headers)
@@ -274,7 +273,7 @@ class AccessMiddleware:
             session = None
         if session is None:
             if path.startswith("/api/") or scope["method"] not in SAFE_METHODS:
-                await self._reply(send_with_headers, 401, {"detail": "sign in"})
+                await self._reply(send_with_headers, 401, "sign in")
             else:
                 target = path + (
                     "?" + scope["query_string"].decode()
@@ -290,9 +289,7 @@ class AccessMiddleware:
         if scope["method"] not in SAFE_METHODS and not same_origin(
             header(scope, b"origin"), self.public_url
         ):
-            await self._reply(
-                send_with_headers, 403, {"detail": "cross-origin request"}
-            )
+            await self._reply(send_with_headers, 403, "cross-origin request")
             return
         scope.setdefault("state", {})["session"] = session
         await self.app(scope, receive, send_with_headers)
@@ -303,32 +300,30 @@ class AccessMiddleware:
         if (origin is not None and not same_origin(origin, self.public_url)) or header(
             scope, b"sec-fetch-site"
         ) == "cross-site":
-            await self._reply(send, 403, {"detail": "cross-origin request"})
+            await self._reply(send, 403, "cross-origin request")
             return
         credentials = apppasswords.parse_basic(header(scope, b"authorization"))
         if credentials is None:
-            await self._reply(send, 401, {"detail": "app password needed"}, dav=True)
+            await self._reply(send, 401, "app password needed", dav=True)
             return
         username, secret = credentials
         outcome, credential = await apppasswords.authenticate(
             scope["app"].state.kernel, username, secret, client_address(scope)
         )
         if outcome is apppasswords.Outcome.THROTTLED:
-            await self._reply(
-                send, 429, {"detail": "too many failed attempts"}, retry_after=900
-            )
+            await self._reply(send, 429, "too many failed attempts", retry_after=900)
             return
         # allowedEmails lives in the kernel's config, as for sessions.
         if credential is None or not sessions.admitted(
             credential.email, self.allowed_emails
         ):
-            await self._reply(send, 401, {"detail": "wrong app password"}, dav=True)
+            await self._reply(send, 401, "wrong app password", dav=True)
             return
         if (
             scope["method"] not in DAV_READ_METHODS
             and apppasswords.Scope.WRITE not in credential.scopes
         ):
-            await self._reply(send, 403, {"detail": "this app password is read-only"})
+            await self._reply(send, 403, "this app password is read-only")
             return
         scope.setdefault("state", {})["app_password"] = credential
         await self.app(scope, receive, send)
@@ -337,13 +332,13 @@ class AccessMiddleware:
     async def _reply(
         send: Send,
         status: int,
-        body: dict[str, str] | None,
+        message: str | None,
         location: str | None = None,
         *,
         dav: bool = False,
         retry_after: int | None = None,
     ) -> None:
-        content = b"" if body is None else json.dumps(body).encode()
+        content = b"" if message is None else errors.body(status, message)
         headers = [
             (b"content-type", b"application/json"),
             (b"cache-control", b"no-store"),

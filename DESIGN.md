@@ -23,6 +23,12 @@ internet :443 -> Caddy (TLS) -> unix:/run/heycarl/kernel.sock
 - The kernel and PostgREST listen only on unix sockets. Hetztop runs agents as
   local users, so a loopback port is not a trust boundary there. Socket file
   permissions are.
+- Every `/api/*` error has PostgREST's body, `{code, message, details, hint}`.
+  The data proxy passes PostgREST's errors through. The kernel's own errors
+  (`heycarl/errors.py`, the gate in `access.py`) use code `HC<status>`, as
+  PostgREST uses `PT<status>` for a raised status, and a crash answers `HC500`
+  with no detail. A client parses one shape. Exception: a browser navigation
+  under `/api` (the calendar's OAuth callback) answers plain text for a person.
 
 ## Identity
 
