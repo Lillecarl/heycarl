@@ -8,15 +8,22 @@
 	interface Todo {
 		id: number;
 		parent_id: number | null;
+		list_id: number | null;
 		title: string;
 		notes: string;
 		due: string | null;
 		done_at: string | null;
 	}
+	interface List {
+		id: number;
+		name: string;
+	}
 
 	const FOLDED_KEY = 'heycarl.todos.folded';
 
 	let todos = $state<Todo[]>([]);
+	let lists = $state<List[]>([]);
+	let current = $state<number | null>(parse(location.hash));
 	let title = $state('');
 	let error = $state<string | null>(null);
 	let open = $state<number | null>(null);
@@ -24,8 +31,25 @@
 	let subtitle = $state('');
 	let deleting = $state<number | null>(null);
 	let folded = $state<Set<number>>(readFolded());
+	let naming = $state<'new' | 'rename' | null>(null);
+	let listName = $state('');
+	let dropping = $state(false);
 
-	let children = $derived(childrenOf(todos));
+	let shown = $derived(todos.filter((t) => t.list_id === current));
+	let children = $derived(childrenOf(shown));
+	let openCount = $derived(countOpen(todos));
+	let currentList = $derived(lists.find((l) => l.id === current) ?? null);
+
+	function parse(hash: string): number | null {
+		const m = /^#\/list\/(\d+)$/.exec(hash);
+		return m ? Number(m[1]) : null;
+	}
+
+	function countOpen(list: Todo[]): Map<number | null, number> {
+		const out = new Map<number | null, number>();
+		for (const t of list) if (!t.done_at) out.set(t.list_id, (out.get(t.list_id) ?? 0) + 1);
+		return out;
+	}
 
 	function readFolded(): Set<number> {
 		try {
@@ -63,7 +87,59 @@
 	}
 
 	async function load(): Promise<void> {
-		todos = await data<Todo[]>('todos', 'todo?order=done_at.nullsfirst,due.nullslast,id');
+		[todos, lists] = await Promise.all([
+			data<Todo[]>('todos', 'todo?order=done_at.nullsfirst,due.nullslast,id'),
+			data<List[]>('todos', 'list?select=id,name&order=position,name')
+		]);
+	}
+
+	function pick(id: number | null): void {
+		location.hash = id === null ? '#/' : `#/list/${id}`;
+	}
+
+	function startNaming(mode: 'new' | 'rename'): void {
+		naming = naming === mode ? null : mode;
+		listName = mode === 'rename' ? (currentList?.name ?? '') : '';
+		dropping = false;
+	}
+
+	function saveList(event: SubmitEvent): void {
+		event.preventDefault();
+		const name = listName.trim();
+		if (!name) return;
+		const mode = naming;
+		naming = null;
+		run(async () => {
+			if (mode === 'rename' && current !== null) {
+				await data('todos', `list?id=eq.${current}`, json('PATCH', { name }));
+				return;
+			}
+			const [made] = await data<List[]>(
+				'todos',
+				'list',
+				json('POST', { name }, 'return=representation')
+			);
+			pick(made.id);
+		});
+	}
+
+	function dropList(): void {
+		if (current === null) return;
+		if (!dropping) {
+			dropping = true;
+			return;
+		}
+		const id = current;
+		dropping = false;
+		pick(null);
+		run(() => data('todos', `list?id=eq.${id}`, { method: 'DELETE' }));
+	}
+
+	function moveTo(todo: Todo, value: string): void {
+		const list_id = value === '' ? null : Number(value);
+		run(() =>
+			data('todos', `todo?id=eq.${todo.id}`, json('PATCH', { parent_id: null, list_id }))
+		);
 	}
 
 	async function run(action: () => Promise<unknown>): Promise<void> {
@@ -81,7 +157,7 @@
 		const text = title.trim();
 		if (!text) return;
 		title = '';
-		run(() => data('todos', 'todo', json('POST', { title: text })));
+		run(() => data('todos', 'todo', json('POST', { title: text, list_id: current })));
 	}
 
 	function addSub(event: SubmitEvent, parent: Todo): void {
@@ -120,6 +196,14 @@
 
 	onMount(() => {
 		load().catch((e) => (error = String(e)));
+		const onHash = () => {
+			current = parse(location.hash);
+			open = null;
+			naming = null;
+			dropping = false;
+		};
+		addEventListener('hashchange', onHash);
+		return () => removeEventListener('hashchange', onHash);
 	});
 </script>
 
@@ -163,6 +247,22 @@
 					onblur={(e) => saveNotes(todo, e.currentTarget.value)}
 				></textarea>
 				<Related scope="todos" table="todo" key={{ id: todo.id }} />
+				{#if lists.length}
+					<label class="move">
+						{todo.parent_id === null ? 'Move to' : 'Move out to'}
+						<select onchange={(e) => moveTo(todo, e.currentTarget.value)}>
+							<option value="" selected={todo.list_id === null && todo.parent_id === null}
+								>Inbox</option
+							>
+							{#each lists as l (l.id)}
+								<option value={l.id} selected={todo.list_id === l.id && todo.parent_id === null}
+									>{l.name}</option
+								>
+							{/each}
+							{#if todo.parent_id !== null}<option value="-" disabled selected>…</option>{/if}
+						</select>
+					</label>
+				{/if}
 				<div class="actions">
 					{#if deleting === todo.id}
 						<button class="danger" onclick={() => remove(todo)}
@@ -192,8 +292,51 @@
 	</li>
 {/snippet}
 
+<nav class="lists" aria-label="Lists">
+	<button class="list" aria-current={current === null} onclick={() => pick(null)}>
+		Inbox <span class="count">{openCount.get(null) ?? 0}</span>
+	</button>
+	{#each lists as l (l.id)}
+		<button class="list" aria-current={current === l.id} onclick={() => pick(l.id)}>
+			{l.name} <span class="count">{openCount.get(l.id) ?? 0}</span>
+		</button>
+	{/each}
+	<button class="list" aria-label="New list" onclick={() => startNaming('new')}>+ List</button>
+</nav>
+
+{#if currentList}
+	<div class="actions list-actions">
+		<button onclick={() => startNaming('rename')}>Rename</button>
+		{#if dropping}
+			<button class="danger" onclick={dropList}
+				>Delete “{currentList.name}” with {shown.length} todos</button
+			>
+			<button onclick={() => (dropping = false)}>Keep</button>
+		{:else}
+			<button class="danger" onclick={dropList}>Delete list</button>
+		{/if}
+	</div>
+{/if}
+
+{#if naming}
+	<form class="naming" onsubmit={saveList}>
+		<!-- svelte-ignore a11y_autofocus -->
+		<input
+			bind:value={listName}
+			placeholder={naming === 'new' ? 'New list, e.g. Shopping' : 'List name'}
+			maxlength="200"
+			autofocus
+		/>
+		<button type="submit">{naming === 'new' ? 'Make' : 'Save'}</button>
+	</form>
+{/if}
+
 <form onsubmit={add}>
-	<input bind:value={title} placeholder="New todo" maxlength="500" />
+	<input
+		bind:value={title}
+		placeholder={currentList ? `New todo in ${currentList.name}` : 'New todo'}
+		maxlength="500"
+	/>
 	<button type="submit">Add</button>
 </form>
 
@@ -318,6 +461,44 @@
 	}
 	.sub {
 		padding: 0.5rem 0 0.5rem 5rem;
+	}
+	.lists {
+		display: flex;
+		gap: 0.5rem;
+		overflow-x: auto;
+		padding-bottom: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+	.list {
+		flex: none;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		white-space: nowrap;
+	}
+	.list[aria-current='true'] {
+		border-color: var(--hc-accent, teal);
+		color: var(--hc-accent, teal);
+		font-weight: bold;
+	}
+	.list-actions,
+	.naming {
+		margin-bottom: 0.5rem;
+	}
+	.move {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.move select {
+		font: inherit;
+		font-size: max(1rem, 16px);
+		color: inherit;
+		min-height: 3rem;
+		padding: 0 0.5rem;
+		border: 1px solid var(--hc-muted, gray);
+		border-radius: 0.5rem;
+		background: var(--hc-bg, transparent);
 	}
 	.error {
 		color: var(--hc-error, red);
