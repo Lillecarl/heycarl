@@ -4,7 +4,13 @@
 	import { onMount } from 'svelte';
 	import { data, json } from '@heycarl/sdk';
 	import Related from '@heycarl/sdk/Related.svelte';
+	import TagChips from '@heycarl/sdk/TagChips.svelte';
 
+	interface Tag {
+		id: number;
+		name: string;
+		color: string | null;
+	}
 	interface Todo {
 		id: number;
 		parent_id: number | null;
@@ -34,8 +40,17 @@
 	let naming = $state<'new' | 'rename' | null>(null);
 	let listName = $state('');
 	let dropping = $state(false);
+	let tags = $state<Tag[]>([]);
+	// False when this Hey Carl runs no tags plugin.
+	let haveTags = $state(false);
+	let filter = $state<number | null>(null);
+	// The ids carrying the filter tag; null shows every todo.
+	let tagged = $state<Set<number> | null>(null);
 
-	let shown = $derived(todos.filter((t) => t.list_id === current));
+	let shown = $derived(
+		todos.filter((t) => t.list_id === current && (tagged === null || tagged.has(t.id)))
+	);
+	let filterTag = $derived(tags.find((t) => t.id === filter) ?? null);
 	let children = $derived(childrenOf(shown));
 	let openCount = $derived(countOpen(todos));
 	let currentList = $derived(lists.find((l) => l.id === current) ?? null);
@@ -91,7 +106,38 @@
 			data<Todo[]>('todos', 'todo?order=done_at.nullsfirst,due.nullslast,id'),
 			data<List[]>('todos', 'list?select=id,name&order=position,name')
 		]);
+		await loadTags();
 	}
+
+	async function loadTags(): Promise<void> {
+		try {
+			tags = await data<Tag[]>('tags', 'tag?select=id,name,color&order=name');
+			haveTags = true;
+		} catch {
+			tags = [];
+			haveTags = false;
+		}
+		if (filter !== null && !tags.some((t) => t.id === filter)) filter = null;
+		tagged =
+			filter === null
+				? null
+				: new Set(
+						(
+							await data<{ id: number }[]>(
+								'tags',
+								'rpc/tagged_keys',
+								json('POST', { tag_id: filter, of_scope: 'todos', of_table: 'todo' })
+							)
+						).map((k) => k.id)
+					);
+	}
+
+	function filterBy(id: number | null): void {
+		filter = filter === id ? null : id;
+		run(loadTags);
+	}
+
+	const chip = (color: string | null) => (color ? `var(--hc-${color})` : 'var(--hc-muted, gray)');
 
 	function pick(id: number | null): void {
 		location.hash = id === null ? '#/' : `#/list/${id}`;
@@ -157,7 +203,26 @@
 		const text = title.trim();
 		if (!text) return;
 		title = '';
-		run(() => data('todos', 'todo', json('POST', { title: text, list_id: current })));
+		const tag = filterTag;
+		run(async () => {
+			const [made] = await data<Todo[]>(
+				'todos',
+				'todo',
+				json('POST', { title: text, list_id: current }, 'return=representation')
+			);
+			// Under a tag filter a new todo carries the tag, so it stays in view.
+			if (tag)
+				await data(
+					'tags',
+					'rpc/tag_entry',
+					json('POST', {
+						of_scope: 'todos',
+						of_table: 'todo',
+						of_key: { id: made.id },
+						name: tag.name
+					})
+				);
+		});
 	}
 
 	function addSub(event: SubmitEvent, parent: Todo): void {
@@ -246,6 +311,14 @@
 					value={todo.notes}
 					onblur={(e) => saveNotes(todo, e.currentTarget.value)}
 				></textarea>
+				{#if haveTags}
+					<TagChips
+						scope="todos"
+						table="todo"
+						key={{ id: todo.id }}
+						onchange={() => loadTags().catch((e) => (error = String(e)))}
+					/>
+				{/if}
 				<Related scope="todos" table="todo" key={{ id: todo.id }} />
 				{#if lists.length}
 					<label class="move">
@@ -303,6 +376,22 @@
 	{/each}
 	<button class="list" aria-label="New list" onclick={() => startNaming('new')}>+ List</button>
 </nav>
+
+{#if tags.length}
+	<nav class="filter" aria-label="Filter by tag">
+		{#each tags as t (t.id)}
+			<button
+				class="tag"
+				aria-pressed={filter === t.id}
+				style:--chip={chip(t.color)}
+				onclick={() => filterBy(t.id)}>{t.name}</button
+			>
+		{/each}
+		{#if filterTag}
+			<button class="tag clear" onclick={() => filterBy(null)}>Show all</button>
+		{/if}
+	</nav>
+{/if}
 
 {#if currentList}
 	<div class="actions list-actions">
@@ -480,6 +569,26 @@
 		border-color: var(--hc-accent, teal);
 		color: var(--hc-accent, teal);
 		font-weight: bold;
+	}
+	.filter {
+		display: flex;
+		gap: 0.5rem;
+		overflow-x: auto;
+		padding-bottom: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+	.tag {
+		flex: none;
+		white-space: nowrap;
+		border-radius: 999px;
+		border-color: var(--chip, var(--hc-muted, gray));
+	}
+	.tag[aria-pressed='true'] {
+		background: color-mix(in oklab, var(--chip) 25%, transparent);
+		font-weight: bold;
+	}
+	.tag.clear {
+		border-style: dashed;
 	}
 	.list-actions,
 	.naming {
