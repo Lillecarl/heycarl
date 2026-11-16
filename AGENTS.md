@@ -26,6 +26,7 @@ Architecture: DESIGN.md. This file: frontend conventions. Standard HTML, ARIA an
 - Navigate with `<a href>`. A button never sets `location.hash`. Exception: after a create, go to the new entry.
 - After a delete: `leave()` (`location.replace`), so Back does not reopen the entry.
 - Never `location.hash = ''`: the browser loads the page again and aborts requests in flight.
+- A hash id can name a deleted entry (an old link, another tab). Load detail only for an id found in the loaded rows; otherwise show "No such X" with a link to the start. Never show the raw 404.
 - Open/close toggle: one link, `href={open ? hashHref() : hashHref('x', id)}`, with `aria-expanded`.
 - Shell views: state in the URL (`?view=`), as links.
 - `aria-current="page"` on the current link only: `aria-current={here ? 'page' : undefined}`, never a boolean.
