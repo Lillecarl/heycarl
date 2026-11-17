@@ -30,6 +30,7 @@ testers.runNixOSTest {
             revoke = "${fakeGoogle}/revoke";
             userinfo = "${fakeGoogle}/userinfo";
             calendar = "${fakeGoogle}/calendar/v3";
+            people = "${fakeGoogle}/v1";
           };
         };
       };
@@ -187,7 +188,7 @@ testers.runNixOSTest {
 
     with subtest("plugins are listed and their modules served"):
         plugins = json.loads(curl(f"{as_alice} http://hey/api/plugins"))
-        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "departures", "places", "prm", "reminders", "tags", "todos"], plugins
+        assert sorted(p["name"] for p in plugins) == ["calendar", "counters", "departures", "google_contacts", "places", "prm", "reminders", "tags", "todos"], plugins
         for p in plugins:
             curl(f"-f {as_alice} 'http://hey{p['frontend']['module']}' -o /dev/null")
 

@@ -93,6 +93,9 @@ def _crm_era(plugin_dirs: list[str], into: Path) -> list[str]:
     """The plugin directories as they were before the rename."""
     out = []
     for name, root in _by_name(plugin_dirs).items():
+        if CRM.new in plugins.load_plugin(root).manifest.requires:
+            # Newer than the rename: it never ran beside crm.
+            continue
         if name not in (CRM.new, "calendar"):
             out.append(str(root))
             continue

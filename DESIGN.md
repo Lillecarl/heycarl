@@ -365,6 +365,55 @@ Accepted:
 - The kernel's worker token can read every sealed token, so the key is
   what protects them.
 
+## Google Contacts
+
+The `google_contacts` plugin keeps a read-only copy of each connected
+Google account's contacts. The person links each one to a contact in the
+book and copies fields from Google into it. Google is never told about a
+link or a copy. The scope is `contacts.readonly`. Writing back to Google
+is a later step: it needs the `contacts` scope in the manifest, and each
+account then grants it again.
+
+- `requires: ["prm"]`: the link table references the contact book. The
+  kernel orders plugins by `requires` and migrates prm first. A missing
+  or circular requirement stops the kernel.
+- Tables: `person` (one Google contact: names, organization, biography,
+  birthday, and emails, phones, addresses and URLs as `[{value, label}]`),
+  `match` (person -> contact), `sync_status` and `sync_state` (the sync
+  token, no grant). The `entry` view joins a person to its account and
+  its contact. Photos are not stored: the page would load them from
+  Google, which would tell Google each time someone looked.
+- Sync: as the calendar's, per account. A full list with
+  `requestSyncToken`, then the token. The same `personFields` go on every
+  call, because a token holds only with the parameters that issued it.
+  Deletions arrive with `metadata.deleted`. A rename
+  (`previousResourceNames`) updates the row, so its id and link hold. An
+  expired token (410, `EXPIRED_SYNC_TOKEN`) means a full sync. Google ends
+  a token 7 days after its full sync, and the daily full sync keeps one
+  alive.
+- Links: `match` is the person's own table, under RLS with the composite
+  keys, so neither end can be another owner's. A Google contact has at
+  most one contact. A contact may have several Google contacts: the same
+  person in two accounts, or a duplicate in one. `match` is tracked, as
+  every table a person writes: undo brings back an unlink, and undoing a
+  contact's delete brings back its links.
+- A Google contact deleted at Google, or a disconnected account, takes
+  its links; the contacts stay. Those links are in the trash, and a
+  restore reports them as failed, since the Google contact is gone.
+- `suggestions()` (invoker) lists likely links for unlinked Google
+  contacts: the same email, the same phone (the last nine digits), or the
+  same full name. It reads only the database.
+- `copy_fields(person_id, fields)` and `import_person(person_id)` are
+  invoker functions. They write prm's tables as the person, so prm's RLS,
+  grants, CHECKs and history all hold, and undo reverses a copy. A text
+  field replaces the book's when Google's is not empty. A list field adds
+  the values the book lacks, compared without case. A birthday is added
+  when the book has none on that day.
+- `person` is tracked for Links, with its version trigger dropped, as
+  calendar's `event`.
+- MCP: `google_contacts_list`, `_suggestions` (read), `_link`, `_unlink`,
+  `_copy`, `_import` and `_sync` (write).
+
 ## The PRM
 
 The schema is the application. The page is a thin view over PostgREST, and

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "name": "google_contacts",
+  "title": "Google Contacts",
+  "requires": ["prm"],
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_google_contacts",
+  "google": { "scopes": ["https://www.googleapis.com/auth/contacts.readonly"] },
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-google-contacts": "Google Contacts" }
+  }
+}
