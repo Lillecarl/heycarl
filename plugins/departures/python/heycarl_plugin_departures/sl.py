@@ -2,8 +2,9 @@
 (DESIGN.md "Departures").
 
 Every URL is built from an integer site id, so no caller can make the
-kernel fetch anything else. Answers are cached for a short time, and
-concurrent askers share one fetch.
+kernel fetch anything else. Answers are cached, concurrent askers share
+one fetch, and after a refusal the kernel asks SL nothing for a while and
+answers from the last board it has.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
@@ -29,8 +30,18 @@ log = structlog.get_logger()
 BASE_URL: Final = "https://transport.integration.sl.se/v1"
 # SL sends local times without an offset.
 ZONE: Final = ZoneInfo("Europe/Stockholm")
-DEPARTURES_SECONDS: Final = 20.0
+DEPARTURES_SECONDS: Final = 60.0
 SITES_SECONDS: Final = 24 * 3600.0
+# How long an old answer stands in while SL does not answer. Past this, a
+# board has mostly left.
+STALE_BOARD_SECONDS: Final = 15 * 60.0
+STALE_SITES_SECONDS: Final = 7 * 24 * 3600.0
+# SL publishes no rate limit and, measured 2026-11-17, sends no Retry-After
+# with its 429. The pause doubles from the first to the last.
+BACKOFF_SECONDS: Final = 60.0
+MAX_BACKOFF_SECONDS: Final = 15 * 60.0
+# A departure this long past its expected time has left.
+LEFT_SECONDS: Final = 60.0
 FORECAST_MINUTES: Final = 60
 CACHE_LIMIT: Final = 200
 SEARCH_LIMIT: Final = 20
@@ -223,6 +234,22 @@ def select(board: Board, wanted: Filter) -> Board:
     )
 
 
+def still_to_leave(board: Board, now: datetime) -> Board:
+    """`board` without the departures that left before `now`."""
+    gone = now - timedelta(seconds=LEFT_SECONDS)
+    return board.model_copy(
+        update={"departures": [d for d in board.departures if d.expected >= gone]}
+    )
+
+
+def retry_after(response: httpx.Response) -> float:
+    """SL's Retry-After in seconds, when it sends one as a number."""
+    try:
+        return max(0.0, float(response.headers.get("retry-after", "")))
+    except ValueError:
+        return 0.0
+
+
 def _fold(text: str) -> str:
     return re.sub(r"[\W_]", "", text.casefold())
 
@@ -274,7 +301,8 @@ class Sites:
 @dataclass(slots=True)
 class _Entry[T]:
     value: T
-    expires: float
+    # On `SL.clock`.
+    fetched: float
 
 
 @dataclass
@@ -288,8 +316,20 @@ class SL:
     _sites: _Entry[Sites] | None = None
     # None is the site list.
     _locks: dict[int | None, anyio.Lock] = field(default_factory=dict)
+    # One pause for all of SL: its limit is per client, not per site.
+    _quiet_until: float = 0.0
+    _backoff: float = 0.0
+
+    def _pause(self, asked: float) -> None:
+        self._backoff = min(
+            max(2 * self._backoff, BACKOFF_SECONDS), MAX_BACKOFF_SECONDS
+        )
+        self._quiet_until = self.clock() + max(asked, self._backoff)
+        log.warning("sl_pause", seconds=round(self._quiet_until - self.clock()))
 
     async def _get(self, path: str, params: dict[str, str]) -> bytes:
+        if self.clock() < self._quiet_until:
+            raise SLError("SL asked Hey Carl to wait. It tries again shortly")
         async with httpx.AsyncClient(
             base_url=self.base_url, transport=self.transport, timeout=HTTP_TIMEOUT
         ) as http:
@@ -297,44 +337,66 @@ class SL:
                 r = await http.get(path, params=params)
             except httpx.HTTPError as e:
                 log.warning("sl_unreachable", path=path, error=type(e).__name__)
+                self._pause(0.0)
                 raise SLError("cannot reach SL") from e
         if r.status_code != httpx.codes.OK:
             log.warning("sl_refused", path=path, status=r.status_code)
+            # A 404 is about one site; these are about SL, or about us.
+            if (
+                r.status_code == httpx.codes.TOO_MANY_REQUESTS
+                or r.status_code >= httpx.codes.INTERNAL_SERVER_ERROR
+            ):
+                self._pause(retry_after(r))
             raise SLError(f"SL answered {r.status_code}")
+        self._backoff = 0.0
         return r.content
 
-    def _fresh[T](self, entry: _Entry[T] | None) -> T | None:
-        return (
-            entry.value if entry is not None and entry.expires > self.clock() else None
-        )
+    def _age[T](self, entry: _Entry[T]) -> float:
+        return self.clock() - entry.fetched
 
     async def _once[T](
         self,
         key: int | None,
         current: Callable[[], _Entry[T] | None],
         fetch: Callable[[], Awaitable[T]],
+        fresh: float,
+        stale: float,
     ) -> T:
-        """The cached value, or one fetch shared by every caller waiting on `key`."""
-        if (found := self._fresh(current())) is not None:
-            return found
+        """The cached value while it is younger than `fresh`, else one fetch
+        shared by every caller waiting on `key`. If the fetch fails, the
+        cached value while it is younger than `stale`."""
+        if (entry := current()) is not None and self._age(entry) < fresh:
+            return entry.value
         async with self._locks.setdefault(key, anyio.Lock()):
-            if (found := self._fresh(current())) is not None:
-                return found
-            return await fetch()
+            if (entry := current()) is not None and self._age(entry) < fresh:
+                return entry.value
+            try:
+                return await fetch()
+            except SLError:
+                if entry is not None and self._age(entry) < stale:
+                    return entry.value
+                raise
 
     def _keep(self, site_id: int, board: Board) -> None:
         now = self.clock()
         if len(self._boards) >= CACHE_LIMIT:
-            self._boards = {k: e for k, e in self._boards.items() if e.expires > now}
+            self._boards = {
+                k: e
+                for k, e in self._boards.items()
+                if now - e.fetched < STALE_BOARD_SECONDS
+            }
             self._locks = {
                 k: lock
                 for k, lock in self._locks.items()
                 if k is None or k in self._boards or lock.statistics().locked
             }
         if len(self._boards) < CACHE_LIMIT:
-            self._boards[site_id] = _Entry(board, now + DEPARTURES_SECONDS)
+            self._boards[site_id] = _Entry(board, now)
 
     async def board(self, site_id: int) -> Board:
+        """The site's board, up to `DEPARTURES_SECONDS` old. While SL does
+        not answer, up to `STALE_BOARD_SECONDS` old, as its `fetched_at`
+        says, and without the departures that have left."""
         if not 1 <= site_id <= MAX_SITE_ID:
             raise SLError("no such site")
 
@@ -346,12 +408,24 @@ class SL:
             self._keep(site_id, board)
             return board
 
-        return await self._once(site_id, lambda: self._boards.get(site_id), fetch)
+        board = await self._once(
+            site_id,
+            lambda: self._boards.get(site_id),
+            fetch,
+            DEPARTURES_SECONDS,
+            STALE_BOARD_SECONDS,
+        )
+        now = datetime.now(ZONE)
+        if now - board.fetched_at < timedelta(seconds=DEPARTURES_SECONDS):
+            return board
+        return still_to_leave(board, now)
 
     async def sites(self) -> Sites:
         async def fetch() -> Sites:
             sites = Sites.parse(await self._get("/sites", {"expand": "false"}))
-            self._sites = _Entry(sites, self.clock() + SITES_SECONDS)
+            self._sites = _Entry(sites, self.clock())
             return sites
 
-        return await self._once(None, lambda: self._sites, fetch)
+        return await self._once(
+            None, lambda: self._sites, fetch, SITES_SECONDS, STALE_SITES_SECONDS
+        )

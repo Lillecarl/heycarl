@@ -167,7 +167,8 @@ def register(ctx: PluginContext) -> None:
         """The next departures from one saved stop, or from every one, in
         the next hour: the first `limit`, plus the next one of each line
         and direction they leave out. `minutes` counts from now; `notices`
-        are SL's messages, such as a cancellation."""
+        are SL's messages, such as a cancellation. `fetched_at` is when SL
+        answered: while SL does not answer, it is up to 15 minutes old."""
         limit = max(1, min(limit, MAX_SHOWN))
         stops = await stop_rows(ctx, stop_id)
         boards: list[Row] = [{} for _ in stops]
@@ -183,6 +184,7 @@ def register(ctx: PluginContext) -> None:
             now = datetime.now(ZONE)
             boards[i] = {
                 "stop": row,
+                "fetched_at": board.fetched_at.isoformat(),
                 "notices": board.notices,
                 "departures": [
                     {

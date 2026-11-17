@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlsplit
 
+import httpx
 import pytest
 
 from .conftest import as_user, needs_database
@@ -23,7 +24,6 @@ if TYPE_CHECKING:
 
     from types import ModuleType
 
-    import httpx
     from fastapi import FastAPI
     from heycarl.config import Config
 
@@ -308,6 +308,61 @@ async def test_every_line_and_direction_gets_its_next_departure(sl: ModuleType) 
         sl, 1,
         (17, 1, 1, "CANCELLED"), (18, 1, 2, "EXPECTED"), (17, 1, 4, "EXPECTED"), (19, 1, 5, "CANCELLED"),
     ) == [(17, 1, 1), (18, 1, 2), (17, 1, 4)]
+
+
+async def test_a_refusal_pauses_sl_and_the_last_board_stands_in(sl: ModuleType) -> None:
+    calls: list[int] = []
+    status = [200]
+    t = [0.0]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        calls.append(status[0])
+        return httpx.Response(status[0], json=BOARD)
+
+    client = sl.SL(base_url="http://sl.test/v1", transport=httpx.MockTransport(answer), clock=lambda: t[0])
+    first = await client.board(HOGDALEN)
+    t[0] = 59.0
+    assert await client.board(HOGDALEN) == first
+    assert calls == [200], "a board is kept for a minute"
+
+    status[0] = 429
+    t[0] = 61.0
+    assert (await client.board(HOGDALEN)).fetched_at == first.fetched_at, "the last board stands in"
+    t[0] = 120.0
+    await client.board(HOGDALEN)
+    with pytest.raises(sl.SLError, match="wait"):
+        await client.sites()
+    assert calls == [200, 429], "nothing is asked during the pause"
+    t[0] = 122.0
+    await client.board(HOGDALEN)
+    t[0] = 241.0
+    await client.board(HOGDALEN)
+    assert calls == [200, 429, 429], "the second pause is twice as long"
+
+    status[0] = 200
+    t[0] = 243.0
+    fresh = await client.board(HOGDALEN)
+    assert calls == [200, 429, 429, 200]
+    assert fresh.fetched_at > first.fetched_at
+
+    status[0] = 503
+    t[0] = 243.0 + sl.STALE_BOARD_SECONDS + 1
+    with pytest.raises(sl.SLError, match="503"):
+        await client.board(HOGDALEN)
+    # The success reset the pause, so this one is a minute again.
+    t[0] += 61.0
+    status[0] = 200
+    await client.board(HOGDALEN)
+    assert calls == [200, 429, 429, 200, 503, 200]
+
+
+async def test_an_old_board_drops_what_has_left(sl: ModuleType) -> None:
+    board = sl.parse_board(HOGDALEN, json.dumps(BOARD).encode(), datetime(2026, 11, 17, 11, 0, tzinfo=sl.ZONE))
+    at = datetime(2026, 11, 17, 11, 9, 30, tzinfo=sl.ZONE)
+    # 11:09:00 left 30 s ago, inside the minute a departure is still boarding.
+    assert [d.expected.strftime("%H:%M") for d in sl.still_to_leave(board, at).departures] == [
+        "11:09", "11:12", "11:18",
+    ]
 
 
 async def test_mcp_tools(served: Plain, fake_sl: list[str]) -> None:

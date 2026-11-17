@@ -231,14 +231,23 @@ Decided:
   and `departures_next` show the same set.
 - The URL to SL is built from an integer site id only, so no caller can
   make the kernel fetch anything else.
-- A site's board is cached for 20 s, at most 200 sites, and concurrent
-  askers share one fetch. The 1.3 MB site list is cached for a day and
-  searched in the kernel; the browser gets the top 20 matches.
+- A site's board is cached for 60 s, at most 200 sites, and concurrent
+  askers share one fetch. The page asks once a minute.
+- SL publishes no rate limit and sends no Retry-After with its 429. After
+  a 429, a 5xx or no answer, the kernel asks SL nothing for 1 minute,
+  doubling to 15 minutes while refusals go on (longer if SL ever sends a
+  Retry-After). Meanwhile it answers from the last board, up to 15
+  minutes old, without departures that have left; the page then says
+  "SL is not answering" and the board's time.
+- The 1.3 MB site list is cached for a day, and stands in for a week
+  while SL does not answer. The kernel searches it; the browser gets the
+  top 20 matches.
 - SL sends local times without an offset. The kernel adds
   Europe/Stockholm's offset, and the page counts minutes from the
   expected time when it renders, so a cached answer never shows a stale
   "2 min".
-- SL down or unreadable: 502 with a message for the person.
+- SL down or unreadable, with no board to stand in: 502 with a message
+  for the person.
 - `HEYCARL_SL_URL` replaces SL's address, for tests only.
 
 ## Google accounts

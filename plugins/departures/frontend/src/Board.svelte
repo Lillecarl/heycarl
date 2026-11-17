@@ -8,8 +8,11 @@
 	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { board, boardUrl, clock, departureKey, type Board, type Departure, type Filter } from './stops.ts';
 
-	const REFRESH_MS = 30_000;
+	// The kernel keeps a board for 60 s, so asking sooner gets the same one.
+	const REFRESH_MS = 60_000;
 	const TICK_MS = 10_000;
+	// Older than this, the kernel answered from its last board: SL is not answering.
+	const OLD_MS = 2 * REFRESH_MS;
 
 	let { siteId, filter, limit = 6 }: { siteId: number; filter: Filter; limit?: number } = $props();
 
@@ -64,6 +67,9 @@
 {#if current === null}
 	{#if error == null}<p class="muted">Loading…</p>{/if}
 {:else}
+	{#if now - Date.parse(current.fetched_at) > OLD_MS}
+		<p class="muted">SL is not answering. Times as of {clock(current.fetched_at)}.</p>
+	{/if}
 	{#each current.notices as notice (notice)}
 		<p class="notice">{notice}</p>
 	{/each}
