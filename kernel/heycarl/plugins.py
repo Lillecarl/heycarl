@@ -22,6 +22,9 @@ class Frontend(BaseModel):
     module: str
     # Custom element name -> navigation title.
     pages: dict[str, str] = {}
+    # Table -> custom element that shows one entry of it inside another
+    # plugin's page. It gets the entry's key as its `key` property.
+    embeds: dict[str, str] = {}
 
 
 class Manifest(BaseModel):

@@ -3,6 +3,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { data, json, pluginPages } from '@heycarl/sdk';
+	import Embed from '@heycarl/sdk/Embed.svelte';
 	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import { position, type Position } from '@heycarl/sdk/position';
@@ -264,6 +265,9 @@
 							<li>
 								<a href={href(b.entry)}>{b.entry.label}</a>
 								{#if b.via_tag}<span class="muted">tagged {b.via_tag}</span>{/if}
+								<div class="embed">
+									<Embed scope={b.entry.scope} table={b.entry.table} key={b.entry.key} />
+								</div>
 							</li>
 						{/each}
 					</ul>
@@ -341,6 +345,12 @@
 		gap: 0.5rem;
 		padding: 0.5rem 0;
 		border-bottom: 1px solid var(--hc-border);
+	}
+	.embed {
+		flex-basis: 100%;
+	}
+	.embed:empty {
+		display: none;
 	}
 	dl {
 		display: grid;

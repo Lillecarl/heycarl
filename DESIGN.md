@@ -100,6 +100,10 @@ A plugin is a directory with `heycarl-plugin.json`:
   `/api/plugins/<name>`, webhook routes under `/api/public/<name>`, and jobs.
 - `frontend`: a Svelte custom-element module the shell loads, with its pages,
   panels and settings.
+- `frontend.embeds`: table -> custom element that shows one entry inside
+  another plugin's page. The element gets the entry's key as its `key`
+  property. The SDK's `Embed` renders it, or nothing when the plugin
+  declares none, so the host keeps its plain link and names no plugin.
 
 Nix checks each manifest at build time and bakes the plugin set into the
 package. A plugin is enabled by being in the set; there is no runtime install.
@@ -188,6 +192,9 @@ Decided:
   binding. An entry bound both ways comes once, as a link.
 - The kernel's Permissions-Policy allows `geolocation=(self)`. The browser
   still asks the person.
+
+- "What's here?" renders each bound entry's embed, so a linked stop shows
+  its next departures.
 
 Planned:
 

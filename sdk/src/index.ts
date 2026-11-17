@@ -53,7 +53,12 @@ export function json(method: string, body: unknown, prefer?: string): RequestIni
 export interface PluginInfo {
 	name: string;
 	title: string;
-	frontend: { module: string; pages: Record<string, string> } | null;
+	frontend: {
+		module: string;
+		pages: Record<string, string>;
+		// Table -> custom element that shows one entry inline.
+		embeds: Record<string, string>;
+	} | null;
 }
 
 let pluginList: Promise<PluginInfo[]> | null = null;
@@ -75,4 +80,14 @@ export async function pluginPages(): Promise<Record<string, string>> {
 			return first ? [[p.name, `/p/${p.name}/${first}`]] : [];
 		})
 	);
+}
+
+/**
+ * The element that shows an entry of `scope`/`table` inline, or null: none
+ * declared, or its plugin's module did not load.
+ */
+export async function embedTag(scope: string, table: string): Promise<string | null> {
+	const plugin = (await plugins()).find((p) => p.name === scope);
+	const tag = plugin?.frontend?.embeds[table];
+	return tag && customElements.get(tag) ? tag : null;
 }

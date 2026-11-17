@@ -458,6 +458,7 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
                     "module": f"/plugins/{p.name}/{p.manifest.frontend.module}"
                     f"?v={version(p.root)}",
                     "pages": p.manifest.frontend.pages,
+                    "embeds": p.manifest.frontend.embeds,
                 },
             }
             for p in kernel.plugins
