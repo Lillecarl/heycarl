@@ -23,6 +23,7 @@ let
     "calendar"
     "tags"
     "places"
+    "departures"
   ];
   plugins = pkgs.lib.genAttrs pluginNames plugin;
   kernel = pkgs.callPackage ./nix/kernel.nix {

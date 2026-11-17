@@ -198,13 +198,43 @@ Decided:
 
 Planned:
 
-- SL departures for saved stops and lines, in their own plugin. A stop is
-  bound to a place, so "What's here?" shows its next departures.
 - A notice on arrival needs a position while the app is closed, which a
   PWA cannot get. A native sender (OwnTracks in HTTP mode, or an iOS
   Shortcuts automation) can POST it to a public route with an app
   password. The route checks it against the places and sends a web push,
   and stores nothing.
+
+## Departures
+
+Live departures from saved SL stops, from SL's Transport API
+(`transport.integration.sl.se/v1`), which is public and needs no key.
+
+Decided:
+
+- A stop is a row the person owns: an SL site, a name, and a filter of
+  mode, lines and direction. Owner-only RLS, history, trash, tags and
+  links, like a place. Empty lines or a null mode or direction means
+  every one.
+- The direction is SL's `direction_code` (1 or 2), never the destination
+  text: a short-turn train carries another destination in the same
+  direction.
+- Departures are SL's public data and are never stored. The kernel
+  fetches them when a page or a tool asks, so no job polls SL.
+- `GET /api/plugins/departures/sites/{id}/departures` takes the filter
+  as query parameters and reads no rows. The page reads its own stops
+  through `/api/data`, as the person, and passes the filter. The MCP tool
+  reads stops through `call()`, so RLS applies on both paths.
+- The URL to SL is built from an integer site id only, so no caller can
+  make the kernel fetch anything else.
+- A site's board is cached for 20 s, at most 200 sites, and concurrent
+  askers share one fetch. The 1.3 MB site list is cached for a day and
+  searched in the kernel; the browser gets the top 20 matches.
+- SL sends local times without an offset. The kernel adds
+  Europe/Stockholm's offset, and the page counts minutes from the
+  expected time when it renders, so a cached answer never shows a stale
+  "2 min".
+- SL down or unreadable: 502 with a message for the person.
+- `HEYCARL_SL_URL` replaces SL's address, for tests only.
 
 ## Calendar
 

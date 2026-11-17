@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "name": "departures",
+  "title": "Departures",
+  "migrations": "migrations",
+  "backend": "heycarl_plugin_departures",
+  "frontend": {
+    "directory": "frontend/dist",
+    "module": "index.js",
+    "pages": { "heycarl-departures": "Departures" },
+    "embeds": { "stop": "heycarl-departures-stop" }
+  }
+}
