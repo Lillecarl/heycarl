@@ -28,6 +28,7 @@ testers.runNixOSTest {
             authorize = "${fakeGoogle}/o/oauth2/v2/auth";
             token = "${fakeGoogle}/token";
             revoke = "${fakeGoogle}/revoke";
+            userinfo = "${fakeGoogle}/userinfo";
             calendar = "${fakeGoogle}/calendar/v3";
           };
         };
@@ -258,10 +259,13 @@ testers.runNixOSTest {
             ))
 
         def consent(who):
-            url = json.loads(curl(f"-f {who} -X POST {plugin}/connect"))["url"]
+            url = json.loads(curl(
+                f"-f {who} -H 'content-type: application/json' "
+                f"-d '{{\"next\": \"/p/calendar/heycarl-calendar\"}}' http://hey/api/google/connect"
+            ))["url"]
             assert "code_challenge_method=S256" in url and "calendar.readonly" in url, url
             back = machine.succeed(f"curl -s -o /dev/null -w '%{{redirect_url}}' '{url}'")
-            assert back.startswith(f"{site}/api/plugins/calendar/callback?"), back
+            assert back.startswith(f"{site}/api/google/callback?"), back
             return "http://hey" + back.removeprefix(site)
 
         def sync_now(who):
@@ -273,9 +277,10 @@ testers.runNixOSTest {
         def agenda(who):
             return {e["google_id"]: e["title"] for e in json.loads(curl(f"{who} {cal}/agenda"))}
 
-        info = json.loads(curl(f"{as_alice} {plugin}/status"))
-        assert info == {"configured": True, "redirect_uri": f"{site}/api/plugins/calendar/callback"}, info
-        assert status(f"{as_alice} '{plugin}/callback?state=forged&code=x'") == "400"
+        info = json.loads(curl(f"{as_alice} http://hey/api/google"))
+        assert info["redirect_uri"] == f"{site}/api/google/callback", info
+        assert info["plugins"]["calendar"] == ["https://www.googleapis.com/auth/calendar.readonly"], info
+        assert status(f"{as_alice} 'http://hey/api/google/callback?state=forged&code=x'") == "400"
         assert status(f"{as_bob} '{consent(as_alice)}'") == "403"
         assert status(f"'{consent(as_alice)}'") == "401"
         assert status(f"{as_alice} '{consent(as_alice)}'") == "303"
@@ -293,7 +298,10 @@ testers.runNixOSTest {
         for path in ["account", "calendar", "event", "agenda"]:
             assert json.loads(curl(f"{as_bob} {cal}/{path}")) == [], path
             assert status(f"{cal}/{path}") == "401", path
-        refuse = f"-H 'content-type: application/json' -d '{{\"owner\": \"alice\"}}' {cal}/rpc/refresh_token"
+        refuse = (
+            "-H 'content-type: application/json' -d '{\"owner\": \"alice\", \"account_id\": 1}' "
+            "http://hey/api/data/core/rpc/google_token"
+        )
         assert status(f"{as_bob} {refuse}") == "403"
         assert status(f"{as_alice} {refuse}") == "403"
 
@@ -315,10 +323,11 @@ testers.runNixOSTest {
         [refresh] = state["refresh_tokens"]
         sealed = machine.succeed(
             "runuser -u postgres -- psql -d heycarl -tAc "
-            "\"select encode(sealed, 'escape') from heycarl_private.calendar_google_token\""
+            "\"select encode(sealed, 'escape') from heycarl_private.google_token\""
         )
         assert sealed.strip() and refresh not in sealed
-        bye = json.loads(curl(f"-f {as_alice} -X POST {plugin}/disconnect"))
+        [account] = json.loads(curl(f"-f {as_alice} {cal}/account"))
+        bye = json.loads(curl(f"-f {as_alice} -X POST http://hey/api/google/accounts/{account['id']}/disconnect"))
         assert bye == {"disconnected": True, "revoked": True}, bye
         assert google("state")["revoked"] == [refresh]
         assert json.loads(curl(f"{as_alice} {cal}/event")) == []

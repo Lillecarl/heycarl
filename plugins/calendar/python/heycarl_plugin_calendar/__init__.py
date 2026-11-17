@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from .google import settings_from_env
 from .routes import register_routes
 from .sync import Syncer
 from .tools import register_tools
@@ -22,11 +21,11 @@ log = structlog.get_logger()
 
 
 def register(ctx: PluginContext) -> None:
-    settings = settings_from_env()
-    syncer = None if settings is None else Syncer(settings)
+    syncer = None if ctx.google is None else Syncer(ctx.google)
     if syncer is not None:
+        syncer.google.on_connect(syncer.wake)
         ctx.job(syncer.run_forever)
     else:
         log.info("calendar_not_configured")
-    register_routes(ctx.router, settings, syncer)
+    register_routes(ctx.router, syncer)
     register_tools(ctx.mcp, syncer)

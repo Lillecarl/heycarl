@@ -1,6 +1,7 @@
-"""The calendar plugin against a fake Google (fake_google.py): connect with
-PKCE, sync in full and by token, a 410, a cancelled event, a refresh,
-revoke on disconnect. Nobody reads another's events or token."""
+"""The calendar plugin against a fake Google (fake_google.py), through the
+kernel's Google accounts: sync in full and by token, a 410, a cancelled
+event, a refresh, two accounts, revoke on disconnect. Nobody reads
+another's events or token. test_google.py tests the connect flow itself."""
 
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from fastapi import FastAPI
+
     from heycarl.config import Config
 
 pytestmark = [pytest.mark.anyio, needs_database]
@@ -30,6 +33,8 @@ __all__ = ["served"]
 
 PLUGIN = "/api/plugins/calendar"
 DATA = "/api/data/calendar"
+GOOGLE = "/api/google"
+PAGE = "/p/calendar/heycarl-calendar"
 CLIENT_ID = "hey.apps.example.com"
 CLIENT_SECRET = "fake-client-secret"
 
@@ -65,12 +70,14 @@ def config(config: Config, fake: Fake | None) -> Config:
 
 
 @pytest.fixture(autouse=True)
-def no_sync_limit(monkeypatch: pytest.MonkeyPatch, app: object) -> None:
+def no_sync_limit(monkeypatch: pytest.MonkeyPatch, app: FastAPI) -> None:
     sync = importlib.import_module("heycarl_plugin_calendar.sync")
     monkeypatch.setattr(sync, "MANUAL_SYNC_SECONDS", 0.0)
     # The job a connect wakes would race each test's own syncs for the
     # fake's 410s and counters; the VM test keeps it.
     monkeypatch.setattr(sync.Syncer, "wake", lambda _self: None)
+    if app.state.google is not None:
+        monkeypatch.setattr(app.state.google, "_listeners", [])
 
 
 # Any: a JSON response body.
@@ -86,27 +93,52 @@ async def ok(
     return r.json() if r.content else None
 
 
-async def start(client: httpx.AsyncClient, browser: dict[str, str]) -> str:
+async def start(
+    client: httpx.AsyncClient,
+    browser: dict[str, str],
+    next_path: str = PAGE,
+    account_id: int | None = None,
+) -> str:
     """The callback path Google sends the browser to, after consent."""
-    url = (await ok(client, browser, "POST", f"{PLUGIN}/connect"))["url"]
+    url = (
+        await ok(
+            client,
+            browser,
+            "POST",
+            f"{GOOGLE}/connect",
+            {"next": next_path, "account_id": account_id},
+        )
+    )["url"]
     query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-    assert query["scope"] == "https://www.googleapis.com/auth/calendar.readonly"
-    assert (query["code_challenge_method"], query["access_type"], query["prompt"]) == (
-        "S256",
-        "offline",
-        "consent",
-    )
-    assert query["redirect_uri"] == PUBLIC_URL + PLUGIN + "/callback"
+    assert set(query["scope"].split()) >= {
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/calendar.readonly",
+    }
+    assert (
+        query["code_challenge_method"],
+        query["access_type"],
+        query["prompt"],
+        query["include_granted_scopes"],
+    ) == ("S256", "offline", "consent select_account", "true")
+    assert query["redirect_uri"] == PUBLIC_URL + GOOGLE + "/callback"
     async with httpx.AsyncClient() as browser_at_google:
         consent = await browser_at_google.get(url)
     assert consent.status_code == 302, consent.text
     return consent.headers["location"].removeprefix(PUBLIC_URL)
 
 
-async def connect(client: httpx.AsyncClient, browser: dict[str, str]) -> None:
-    r = await client.get(await start(client, browser), headers=browser)
+async def connect(
+    client: httpx.AsyncClient,
+    browser: dict[str, str],
+    next_path: str = PAGE,
+    account_id: int | None = None,
+) -> None:
+    r = await client.get(
+        await start(client, browser, next_path, account_id), headers=browser
+    )
     assert r.status_code == 303, r.text
-    assert r.headers["location"] == "/p/calendar/heycarl-calendar"
+    assert r.headers["location"] == next_path
 
 
 async def sync(client: httpx.AsyncClient, browser: dict[str, str]) -> dict[str, Any]:
@@ -126,8 +158,13 @@ async def events(
 async def test_without_a_client_the_feature_is_off(client: httpx.AsyncClient) -> None:
     me = as_user("cal-off")
     assert (await ok(client, me, "GET", f"{PLUGIN}/status"))["configured"] is False
-    for path in ["connect", "sync", "disconnect"]:
-        r = await client.post(f"{PLUGIN}/{path}", headers=me)
+    assert (await ok(client, me, "GET", GOOGLE))["configured"] is False
+    for path in [
+        f"{PLUGIN}/sync",
+        f"{GOOGLE}/connect",
+        f"{GOOGLE}/accounts/1/disconnect",
+    ]:
+        r = await client.post(path, json={}, headers=me)
         assert r.status_code == 409, (path, r.text)
     assert await ok(client, me, "GET", f"{DATA}/event") == []
 
@@ -139,7 +176,15 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
     await connect(client, alice)
 
     [account] = await ok(client, alice, "GET", f"{DATA}/account")
-    assert (account["google_account"], account["needs_reconnect"]) == (PRIMARY, False)
+    assert (
+        account["google_account"],
+        account["granted"],
+        account["needs_reconnect"],
+    ) == (PRIMARY, True, False)
+
+    # The first sync brings the calendar list; only the primary is chosen.
+    result = await sync(client, alice)
+    assert result["events"] == 6
     calendars = await ok(
         client, alice, "GET", f"{DATA}/calendar?order=is_primary.desc,name"
     )
@@ -147,9 +192,6 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
         (PRIMARY, True),
         (TEAM, False),
     ]
-
-    result = await sync(client, alice)
-    assert result["events"] == 6
     cached = await events(client, alice)
     assert set(cached) == {"standup", "holiday", "gym_0", "gym_1", "gym_2", "lunch"}
     assert cached["standup"]["attendees"] == ["anna@example.com", PRIMARY]
@@ -165,7 +207,14 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
     assert {"timeMin", "timeMax"} <= set(lists[0]) and len(lists) >= 3
 
     # Nobody else sees any of it, and no session sees nothing at all.
-    for path in ["account", "calendar", "event", "agenda", "calendar_sync"]:
+    for path in [
+        "account",
+        "calendar",
+        "event",
+        "agenda",
+        "calendar_sync",
+        "sync_status",
+    ]:
         r = await client.get(f"{DATA}/{path}", headers=bob)
         assert r.status_code in {200, 401, 403}, (path, r.text)
         if r.status_code == 200:
@@ -183,11 +232,18 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
     )
     # The worker's functions refuse a person, the token one first.
     for fn, args in [
-        ("refresh_token", {"owner": "cal-alice"}),
-        ("owners", {}),
-        ("disconnect", {"owner": "cal-alice"}),
+        ("core/rpc/google_token", {"owner": "cal-alice", "account_id": account["id"]}),
+        ("core/rpc/google_accounts", {"scopes": []}),
         (
-            "apply_events",
+            "core/rpc/google_disconnect",
+            {"owner": "cal-alice", "account_id": account["id"]},
+        ),
+        (
+            "calendar/rpc/set_status",
+            {"owner": "cal-alice", "account_id": account["id"], "error": "x"},
+        ),
+        (
+            "calendar/rpc/apply_events",
             {
                 "owner": "cal-alice",
                 "calendar_id": calendars[0]["id"],
@@ -200,7 +256,7 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
             },
         ),
         (
-            "select_calendar",
+            "calendar/rpc/select_calendar",
             {
                 "owner": "cal-alice",
                 "calendar_id": calendars[0]["id"],
@@ -209,7 +265,7 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
         ),
     ]:
         for who in [alice, bob]:
-            r = await client.post(f"{DATA}/rpc/{fn}", json=args, headers=who)
+            r = await client.post(f"/api/data/{fn}", json=args, headers=who)
             assert r.status_code in {401, 403, 404}, (fn, r.status_code, r.text)
     # Bob cannot choose Alice's calendar.
     r = await client.post(
@@ -221,7 +277,9 @@ async def test_connect_sync_and_privacy(client: httpx.AsyncClient, fake: Fake) -
     # Sealed at rest: the database holds no usable token.
     [refresh] = fake.control("state", {})["refresh_tokens"]
     [(sealed,)] = await owner_rows(
-        "select sealed from heycarl_private.calendar_google_token where owner_sub = %s",
+        "select t.sealed from heycarl_private.google_token t"
+        " join heycarl_private.google_account a on a.id = t.account_id"
+        " where a.owner_sub = %s",
         "cal-alice",
     )
     assert refresh.encode() not in bytes(sealed)
@@ -352,61 +410,74 @@ async def test_changes_cancels_gone_and_refresh(
     assert r["ok"] is False and "connect again" in r["error"]
     [account] = await ok(client, me, "GET", f"{DATA}/account")
     assert account["needs_reconnect"] is True
-    await connect(client, me)
-    [account] = await ok(client, me, "GET", f"{DATA}/account")
-    assert (account["needs_reconnect"], account["last_error"]) == (False, None)
-
-
-async def test_the_state_belongs_to_one_session(
-    client: httpx.AsyncClient, fake: Fake
-) -> None:
-    alice = as_user("cal-state")
-    callback = await start(client, alice)
-    # Another person, another session of the same person, a forged state,
-    # no session: each is refused, and nothing is stored.
-    assert (
-        await client.get(callback, headers=as_user("cal-state-bob"))
-    ).status_code == 403
-    callback = await start(client, alice)
-    assert (await client.get(callback, headers=as_user("cal-state"))).status_code == 403
-    forged = callback.replace("state=", "state=x")
-    assert (await client.get(forged, headers=alice)).status_code == 400
-    callback = await start(client, alice)
-    assert (await client.get(callback)).status_code == 401
-    assert await ok(client, alice, "GET", f"{DATA}/account") == []
-    # A state is used once.
-    callback = await start(client, alice)
-    assert (await client.get(callback, headers=alice)).status_code == 303
-    assert (await client.get(callback, headers=alice)).status_code == 400
-    # Google's error, with a state that is not pending.
-    r = await client.get(
-        f"{PLUGIN}/callback?state=nope&error=access_denied", headers=alice
-    )
-    assert r.status_code == 400
-
-
-async def test_disconnect_revokes_and_forgets(
-    client: httpx.AsyncClient, fake: Fake
-) -> None:
-    me = as_user("cal-bye")
-    await connect(client, me)
+    await connect(client, me, account_id=account["id"])
+    [again] = await ok(client, me, "GET", f"{DATA}/account")
+    assert (again["id"], again["needs_reconnect"]) == (account["id"], False)
     await sync(client, me)
-    [refresh] = fake.control("state", {})["refresh_tokens"]
-    assert await ok(client, me, "POST", f"{PLUGIN}/disconnect") == {
-        "disconnected": True,
-        "revoked": True,
-    }
-    assert fake.control("state", {})["revoked"] == [refresh]
-    for path in ["account", "calendar", "event"]:
-        assert await ok(client, me, "GET", f"{DATA}/{path}") == [], path
+    [again] = await ok(client, me, "GET", f"{DATA}/account")
+    assert again["last_error"] is None
+    # The same events, under the same ids: the account kept its data.
+    assert (await events(client, me))["standup"]["id"] == before["standup"]["id"]
+
+
+async def test_two_accounts_and_disconnecting_one(
+    client: httpx.AsyncClient, fake: Fake
+) -> None:
+    me = as_user("cal-two")
+    await connect(client, me)
+    fake.control("as", {"user": "work"})
+    await connect(client, me)
+    home, work = await ok(client, me, "GET", f"{DATA}/account?order=id")
+    assert (home["google_account"], work["google_account"]) == (
+        PRIMARY,
+        "carl@work.example.com",
+    )
+    assert (await sync(client, me))["events"] == 7
+    assert {"standup", "review"} <= set(await events(client, me))
+    calendars = await ok(client, me, "GET", f"{DATA}/calendar")
+    assert {c["account_id"] for c in calendars} == {home["id"], work["id"]}
+
+    # One account goes, with its calendars and events; the other stays.
+    assert await ok(
+        client, me, "POST", f"{GOOGLE}/accounts/{work['id']}/disconnect"
+    ) == {"disconnected": True, "revoked": True}
+    assert [a["id"] for a in await ok(client, me, "GET", f"{DATA}/account")] == [
+        home["id"]
+    ]
+    left = await events(client, me)
+    assert "review" not in left and "standup" in left
+    assert {
+        c["account_id"] for c in await ok(client, me, "GET", f"{DATA}/calendar")
+    } == {home["id"]}
+    assert (await sync(client, me))["ok"]
     assert (
         await owner_rows(
-            "select 1 from heycarl_private.calendar_google_token where owner_sub = %s",
-            "cal-bye",
+            "select 1 from heycarl_private.google_token where account_id = %s",
+            work["id"],
         )
         == []
     )
     assert await ok(client, me, "POST", "/api/data/core/rpc/trash", {}) == []
+
+
+async def test_an_account_without_calendar_access_is_skipped(
+    client: httpx.AsyncClient, fake: Fake
+) -> None:
+    me = as_user("cal-refused")
+    fake.control(
+        "refuse", {"scopes": ["https://www.googleapis.com/auth/calendar.readonly"]}
+    )
+    await connect(client, me)
+    [account] = await ok(client, me, "GET", f"{DATA}/account")
+    assert account["granted"] is False
+    r = await ok(client, me, "POST", f"{PLUGIN}/sync")
+    assert (r["ok"], r["error"]) == (False, "not connected")
+    # Granting it later: the same account, now with the scope.
+    fake.control("refuse", {"scopes": []})
+    await connect(client, me, account_id=account["id"])
+    [account] = await ok(client, me, "GET", f"{DATA}/account")
+    assert account["granted"] is True
+    assert (await sync(client, me))["events"] == 6
 
 
 async def test_people_at_an_event(client: httpx.AsyncClient, fake: Fake) -> None:
@@ -460,7 +531,7 @@ async def test_mcp_tools(served: Plain, client: httpx.AsyncClient, fake: Fake) -
         detail = await tool(session, "calendar_event", event_id=standup["id"])
         assert detail["event"]["location"] == "Room 4" and detail["people"] == []
         listed = await tool(session, "calendar_calendars")
-        assert listed["account"]["google_account"] == PRIMARY
+        assert [a["google_account"] for a in listed["accounts"]] == [PRIMARY]
         assert [c["selected"] for c in listed["calendars"]] == [True, False]
         resource = await session.read_resource("heycarl://calendar/upcoming")
         [content] = resource.contents
@@ -478,6 +549,6 @@ async def test_mcp_tools(served: Plain, client: httpx.AsyncClient, fake: Fake) -
             session,
             "data_read",
             scope="calendar",
-            path="rpc/refresh_token",
-            query={"owner": "cal-mcp"},
+            path="rpc/sync_state",
+            query={"owner": "cal-mcp", "account_id": "1"},
         )

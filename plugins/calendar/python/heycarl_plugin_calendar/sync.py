@@ -1,4 +1,4 @@
-"""Google Calendar into the cache, one owner at a time.
+"""Google Calendar into the cache, one Google account at a time.
 
 A calendar's first sync, and one a day after it, fetches the whole window
 with singleEvents, so recurring events arrive as instances. Between those,
@@ -18,15 +18,17 @@ from typing import TYPE_CHECKING, Final
 import anyio
 import httpx
 import structlog
-from cryptography.exceptions import InvalidTag
+
+from heycarl.google import GoogleError
+from heycarl.googleaccounts import ApiError
 
 from . import google, store
-from .google import Gone, GoogleError, ReconnectNeeded, Unauthorized
 
 if TYPE_CHECKING:
     from heycarl.app import Kernel
+    from heycarl.googleaccounts import Account, GoogleAccounts
 
-    from .google import Calendar, Event, Settings
+    from .google import Calendar, Event
 
 log = structlog.get_logger()
 
@@ -34,9 +36,7 @@ SYNC_SECONDS: Final = 600.0
 WINDOW_BEFORE: Final = timedelta(days=30)
 WINDOW_AFTER: Final = timedelta(days=365)
 FULL_SYNC_EVERY: Final = timedelta(days=1)
-# Refresh a little early, so a token does not expire mid-sync.
-ACCESS_MARGIN: Final = 60.0
-HTTP_TIMEOUT: Final = 20.0
+GONE: Final = 410
 MANUAL_SYNC_SECONDS = 10.0
 
 
@@ -72,37 +72,26 @@ def split(
 class Outcome:
     ok: bool
     error: str | None = None
-    needs_reconnect: bool = False
     events: int = 0
 
 
-@dataclass
-class Access:
-    token: str = field(repr=False)
-    expires: float
+def combine(outcomes: list[Outcome]) -> Outcome:
+    errors = [o.error for o in outcomes if o.error is not None]
+    return Outcome(
+        ok=all(o.ok for o in outcomes),
+        error="; ".join(errors) or None,
+        events=sum(o.events for o in outcomes),
+    )
 
 
 @dataclass
 class Syncer:
-    settings: Settings
-    _locks: dict[str, anyio.Lock] = field(default_factory=dict)
-    _access: dict[str, Access] = field(default_factory=dict)
+    google: GoogleAccounts
     _wake: anyio.Event = field(default_factory=anyio.Event)
     _manual: dict[str, float] = field(default_factory=dict)
 
-    def lock(self, owner: str) -> anyio.Lock:
-        return self._locks.setdefault(owner, anyio.Lock())
-
     def wake(self) -> None:
         self._wake.set()
-
-    def remember(self, owner: str, grant: google.Grant) -> None:
-        self._access[owner] = Access(
-            grant.access_token, time.monotonic() + grant.expires_in
-        )
-
-    def forget(self, owner: str) -> None:
-        self._access.pop(owner, None)
 
     async def run_forever(self, kernel: Kernel) -> None:
         # PostgREST may still be starting with the kernel; a connect wakes
@@ -112,65 +101,40 @@ class Syncer:
                 await self._wake.wait()
             self._wake = anyio.Event()
             try:
-                owners = await store.owners(kernel)
+                accounts = await self.google.accounts(kernel, [google.SCOPE])
             except Exception:
-                log.exception("calendar_owners_failed")
+                log.exception("calendar_accounts_failed")
                 continue
-            for owner in owners:
-                await self.sync_owner(kernel, owner)
-
-    async def _refresh_token(self, kernel: Kernel, owner: str) -> str | None:
-        sealed = await store.refresh_token(kernel, owner)
-        if sealed is None:
-            return None
-        try:
-            return google.unseal(self.settings.key, owner, sealed)
-        except InvalidTag:
-            # The token key changed: the stored token is lost for good.
-            raise ReconnectNeeded("the token key changed; connect again") from None
-
-    async def _access_token(
-        self, kernel: Kernel, http: httpx.AsyncClient, owner: str, refresh_token: str
-    ) -> str:
-        cached = self._access.get(owner)
-        if cached is not None and cached.expires - ACCESS_MARGIN > time.monotonic():
-            return cached.token
-        grant = await google.refresh(http, self.settings, refresh_token)
-        self.remember(owner, grant)
-        if grant.refresh_token and grant.refresh_token != refresh_token:
-            # An empty account keeps the one stored.
-            await store.connect_account(
-                kernel,
-                owner,
-                "",
-                google.seal(self.settings.key, owner, grant.refresh_token),
-                grant.scope or google.SCOPE,
-            )
-        return grant.access_token
+            for account in accounts:
+                await self.sync_account(kernel, account)
 
     async def sync_now(self, kernel: Kernel, owner: str) -> Outcome | None:
-        """A sync the person asked for; None when they asked a moment ago.
-        Each one costs Google quota, and an MCP client may loop."""
+        """A sync of every account the person asked for; None when they
+        asked a moment ago. Each one costs Google quota, and an MCP client
+        may loop."""
         now = time.monotonic()
         if now - self._manual.get(owner, -MANUAL_SYNC_SECONDS) < MANUAL_SYNC_SECONDS:
             return None
         self._manual[owner] = now
-        return await self.sync_owner(kernel, owner)
+        accounts = await self.google.accounts(kernel, [google.SCOPE], owner)
+        if not accounts:
+            return Outcome(ok=False, error="not connected")
+        return combine([await self.sync_account(kernel, a) for a in accounts])
 
-    async def sync_owner(self, kernel: Kernel, owner: str) -> Outcome:
+    async def sync_account(self, kernel: Kernel, account: Account) -> Outcome:
         """Never raises: a failure is the account's last_error."""
-        async with self.lock(owner):
+        async with self.google.lock(account.id):
             try:
-                outcome = await self._sync(kernel, owner)
-            except ReconnectNeeded as e:
-                self.forget(owner)
-                outcome = Outcome(ok=False, error=str(e), needs_reconnect=True)
+                outcome = await self._sync(kernel, account)
             except GoogleError as e:
+                # ReconnectNeeded too: the kernel marked the account.
                 outcome = Outcome(ok=False, error=str(e))
             except httpx.HTTPStatusError as e:
                 # Only the kernel's own PostgREST calls raise for status.
                 log.exception(
-                    "calendar_store_failed", owner=owner, body=e.response.text[:500]
+                    "calendar_store_failed",
+                    owner=account.owner,
+                    body=e.response.text[:500],
                 )
                 outcome = Outcome(ok=False, error="the sync failed; see the kernel log")
             except httpx.HTTPError as e:
@@ -179,53 +143,40 @@ class Syncer:
                     ok=False, error=f"cannot reach Google ({type(e).__name__})"
                 )
             except Exception:
-                log.exception("calendar_sync_failed", owner=owner)
+                log.exception("calendar_sync_failed", owner=account.owner)
                 outcome = Outcome(ok=False, error="the sync failed; see the kernel log")
             if outcome.error is not None:
-                log.warning("calendar_sync_error", owner=owner, error=outcome.error)
-            try:
-                await store.set_status(
-                    kernel,
-                    owner,
-                    outcome.error,
-                    needs_reconnect=outcome.needs_reconnect,
+                log.warning(
+                    "calendar_sync_error",
+                    owner=account.owner,
+                    account=account.id,
+                    error=outcome.error,
                 )
+            try:
+                await store.set_status(kernel, account, outcome.error)
             except Exception:
-                log.exception("calendar_status_failed", owner=owner)
+                log.exception("calendar_status_failed", owner=account.owner)
             return outcome
 
-    async def _sync(self, kernel: Kernel, owner: str) -> Outcome:
-        refresh_token = await self._refresh_token(kernel, owner)
-        if refresh_token is None:
-            return Outcome(ok=False, error="not connected")
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as http:
+    async def _sync(self, kernel: Kernel, account: Account) -> Outcome:
+        base = self.google.api(google.API_NAME, google.API_URL)
+        async with self.google.session(kernel, account) as session:
 
             async def get(path: str, params: dict[str, str]) -> dict[str, object]:
-                for attempt in range(2):
-                    token = await self._access_token(kernel, http, owner, refresh_token)
-                    try:
-                        return await google.api_get(
-                            http, self.settings, token, path, params
-                        )
-                    except Unauthorized:
-                        # Expired or revoked early: one fresh token, then give up.
-                        self.forget(owner)
-                        if attempt:
-                            raise
-                raise RuntimeError("unreachable")
+                return await session.get(base + path, params)
 
             calendars = await list_calendars(get)
-            await store.put_calendars(kernel, owner, calendars)
+            await store.put_calendars(kernel, account, calendars)
             total = 0
             now = datetime.now(UTC)
-            for state in await store.sync_state(kernel, owner):
-                total += await self._sync_calendar(kernel, owner, state, get, now)
+            for state in await store.sync_state(kernel, account):
+                total += await self._sync_calendar(kernel, account, state, get, now)
         return Outcome(ok=True, events=total)
 
     async def _sync_calendar(
         self,
         kernel: Kernel,
-        owner: str,
+        account: Account,
         state: store.SyncState,
         get: Getter,
         now: datetime,
@@ -246,9 +197,13 @@ class Syncer:
                 items, token = await pages(
                     get, path, {"singleEvents": "true", "syncToken": state.sync_token}
                 )
-            except Gone:
+            except ApiError as e:
+                if e.status_code != GONE:
+                    raise
                 log.info(
-                    "calendar_sync_token_gone", owner=owner, calendar=state.calendar_id
+                    "calendar_sync_token_gone",
+                    owner=account.owner,
+                    calendar=state.calendar_id,
                 )
                 full = True
                 start, end = window(now)
@@ -265,7 +220,7 @@ class Syncer:
         events, removed = split(items, start, end)
         return await store.apply_events(
             kernel,
-            owner,
+            account.owner,
             state.calendar_id,
             full_sync=full,
             events=events,

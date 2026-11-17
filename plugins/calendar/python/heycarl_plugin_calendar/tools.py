@@ -10,8 +10,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from heycarl.mcpserver import UNTRUSTED, call, embed, kernel_of, require, static_context
-from heycarl.oauth import Scope
 from mcp.server.mcpserver import (
     Context,
     Message,
@@ -19,6 +17,9 @@ from mcp.server.mcpserver import (
 )
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+
+from heycarl.mcpserver import UNTRUSTED, call, embed, kernel_of, require, static_context
+from heycarl.oauth import Scope
 
 from .store import SCOPE
 
@@ -111,15 +112,18 @@ def register_tools(mcp: MCPServer, syncer: Syncer | None) -> None:
 
     @mcp.tool(annotations=READ)
     async def calendar_calendars(ctx: Context) -> dict[str, Any]:
-        """The Google account, its calendars, which are included, and when the
-        last sync ran or why it failed."""
-        account: Rows = await call(
+        """The connected Google accounts, their calendars, which are
+        included, and when each account last synced or why it failed.
+        `granted` false: the account has not given calendar access."""
+        accounts: Rows = await call(
             ctx,
             SCOPE,
             "GET",
             "account",
             params={
-                "select": "google_account,connected_at,last_sync_at,last_error,needs_reconnect"
+                "select": "id,google_account,granted,connected_at,last_sync_at,"
+                "last_error,needs_reconnect",
+                "order": "id",
             },
         )
         calendars = await call(
@@ -128,13 +132,13 @@ def register_tools(mcp: MCPServer, syncer: Syncer | None) -> None:
             "GET",
             "calendar",
             params={
-                "select": "id,name,color,time_zone,is_primary,selected",
-                "order": "is_primary.desc,name",
+                "select": "id,account_id,name,color,time_zone,is_primary,selected",
+                "order": "account_id,is_primary.desc,name",
             },
         )
         return {
             "configured": syncer is not None,
-            "account": account[0] if account else None,
+            "accounts": accounts,
             "calendars": calendars,
         }
 

@@ -30,6 +30,8 @@ from . import (
     apppasswords,
     dav,
     errors,
+    google,
+    googleaccounts,
     mcpserver,
     migrations,
     oauth,
@@ -125,6 +127,9 @@ class PluginContext:
     mcp: MCPServer
     # Argument completion for this plugin's prompts and resource templates.
     completions: mcpserver.Completions
+    # The kernel's Google accounts, for a plugin whose manifest names Google
+    # scopes; None when the deploy has no Google client.
+    google: googleaccounts.GoogleAccounts | None = None
     # Mounted at /api/plugins/<name>, behind the gate.
     router: APIRouter = field(default_factory=APIRouter)
     # Mounted at /api/public/<name>. The gate lets these through with no
@@ -153,6 +158,7 @@ def _register_backends(
     plugins: list[Plugin],
     server: MCPServer,
     completions: mcpserver.Completions,
+    google_accounts: googleaccounts.GoogleAccounts | None,
 ) -> list[PluginContext]:
     contexts = []
     for plugin in plugins:
@@ -163,7 +169,12 @@ def _register_backends(
         sys.path.insert(0, str(plugin.root / "python"))
         module = importlib.import_module(plugin.manifest.backend)
         register: Callable[[PluginContext], None] = module.register
-        ctx = PluginContext(plugin=plugin, mcp=server, completions=completions)
+        ctx = PluginContext(
+            plugin=plugin,
+            mcp=server,
+            completions=completions,
+            google=google_accounts if plugin.manifest.google is not None else None,
+        )
         register(ctx)
         app.include_router(ctx.router, prefix=f"/api/plugins/{plugin.name}")
         app.include_router(ctx.public_router, prefix=f"/api/public/{plugin.name}")
@@ -489,7 +500,19 @@ def create_app(config: Config, plugins: list[Plugin]) -> FastAPI:
         )
 
     app.include_router(dav.router)
-    contexts = _register_backends(app, plugins, server, completions)
+    google_settings = google.settings_from_env()
+    google_accounts = (
+        None
+        if google_settings is None
+        else googleaccounts.GoogleAccounts(
+            google_settings, googleaccounts.plugin_scopes(plugins)
+        )
+    )
+    app.state.google = google_accounts
+    app.include_router(
+        googleaccounts.router(google_accounts), prefix=googleaccounts.PATH
+    )
+    contexts = _register_backends(app, plugins, server, completions, google_accounts)
     app.include_router(mcpserver.consent_router(provider))
     sdk_app = mcpserver.mount(app, server, config.public_url)
 

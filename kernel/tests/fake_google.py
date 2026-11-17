@@ -1,6 +1,11 @@
-"""A fake Google: OAuth with PKCE, revoke, calendarList and events.list
-with sync tokens. Standard library only, so the VM test runs this file as
-it is: `python3 fake_google.py PORT CLIENT_ID CLIENT_SECRET`.
+"""A fake Google: OAuth with PKCE, userinfo, revoke, calendarList and
+events.list with sync tokens. Standard library only, so the VM test runs
+this file as it is: `python3 fake_google.py PORT CLIENT_ID CLIENT_SECRET`.
+
+Consent signs in as `user` (control "as"; "carl" by default) and grants
+the scopes asked for, less those control "refuse" names. A token carries
+its user and scopes; an API answers 403 to a token without its scope.
+Revoking any token ends every token of that user, as Google does.
 
 Every change bumps a sequence number; a sync token is the number it was
 issued at, and an incremental list returns what changed after it,
@@ -21,6 +26,8 @@ from typing import Any, Final
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 SCOPE: Final = "https://www.googleapis.com/auth/calendar.readonly"
+CONTACTS_SCOPE: Final = "https://www.googleapis.com/auth/contacts.readonly"
+USERS: Final = {"carl": "carl@example.com", "work": "carl@work.example.com"}
 PRIMARY: Final = "carl@example.com"
 TEAM: Final = "team@group.calendar.example.com"
 PAGE: Final = 2
@@ -75,10 +82,117 @@ def seed() -> dict[str, dict[str, Item]]:
         timed("lunch", "Lunch with Bo", 5, attendees=[{"email": "bo@example.com"}]),
     ]
     team = [timed("offsite", "Team offsite", 10)]
+    work = [timed("review", "Design review", 4)]
     return {
         PRIMARY: {e["id"]: e for e in primary},
         TEAM: {e["id"]: e for e in team},
+        USERS["work"]: {e["id"]: e for e in work},
     }
+
+
+def person(name: str, given: str, family: str = "", **fields: Any) -> Item:
+    """A Person as connections.list sends it."""
+    names = [
+        {
+            "displayName": f"{given} {family}".strip(),
+            "givenName": given,
+            **({"familyName": family} if family else {}),
+            "metadata": {"primary": True},
+        }
+    ]
+    return {
+        "resourceName": f"people/{name}",
+        "etag": f"%{name}",
+        "metadata": {"sources": [{"type": "CONTACT", "id": name}]},
+        "names": names,
+        **fields,
+    }
+
+
+def contacts_seed() -> dict[str, list[Item]]:
+    return {
+        "carl": [
+            person(
+                "c1",
+                "Anna",
+                "Svensson",
+                emailAddresses=[
+                    {
+                        "value": "Anna@Example.com",
+                        "type": "home",
+                        "formattedType": "Home",
+                    }
+                ],
+                phoneNumbers=[{"value": "+46 70-123 45 67", "type": "mobile"}],
+                birthdays=[{"date": {"year": 1990, "month": 3, "day": 14}}],
+                organizations=[{"name": "Acme", "title": "Engineer"}],
+                biographies=[{"value": "Met at the conference."}],
+                addresses=[
+                    {"formattedValue": "Storgatan 1\n111 22 Stockholm", "type": "home"}
+                ],
+                urls=[{"value": "https://anna.example.com"}],
+            ),
+            # Google's 0: the day is not known. No birthday, then.
+            person(
+                "c2",
+                "Bo",
+                "Ek",
+                emailAddresses=[{"value": "bo@example.com"}],
+                birthdays=[{"date": {"year": 1985, "month": 5, "day": 0}}],
+            ),
+            person(
+                "c3",
+                "Cecilia",
+                phoneNumbers=[{"value": "070 555 12 34"}],
+                birthdays=[{"date": {"month": 7, "day": 1}}],
+            ),
+        ],
+        "work": [
+            person(
+                "w1",
+                "Dan",
+                "Larsson",
+                emailAddresses=[{"value": "dan@work.example.com"}],
+            )
+        ],
+    }
+
+
+# Google user -> the calendars in their calendar list.
+CALENDARS: Final = {
+    "carl": [
+        {
+            "id": PRIMARY,
+            "summary": PRIMARY,
+            "primary": True,
+            "backgroundColor": "#9fe1e7",
+            "timeZone": "Europe/Stockholm",
+        },
+        {
+            "id": TEAM,
+            "summary": "Team",
+            "backgroundColor": "#f83a22",
+            "timeZone": "UTC",
+        },
+    ],
+    "work": [
+        {
+            "id": USERS["work"],
+            "summary": USERS["work"],
+            "primary": True,
+            "backgroundColor": "#7bd148",
+            "timeZone": "UTC",
+        }
+    ],
+}
+
+
+class Grant:
+    """Who a token speaks for, and what it may read."""
+
+    def __init__(self, user: str, scopes: frozenset[str]) -> None:
+        self.user = user
+        self.scopes = scopes
 
 
 class Fake:
@@ -86,9 +200,13 @@ class Fake:
         self.client_id = client_id
         self.client_secret = client_secret
         self.lock = threading.Lock()
-        self.codes: dict[str, tuple[str, str]] = {}
-        self.refresh_tokens: set[str] = set()
-        self.access_tokens: set[str] = set()
+        # code -> (challenge, redirect, grant)
+        self.codes: dict[str, tuple[str, str, Grant]] = {}
+        self.refresh_tokens: dict[str, Grant] = {}
+        self.access_tokens: dict[str, Grant] = {}
+        self.user = "carl"
+        self.refused: set[str] = set()
+        self.authorize_queries: list[dict[str, str]] = []
         self.revoked: list[str] = []
         self.refresh_grants = 0
         self.seq = 0
@@ -97,6 +215,13 @@ class Fake:
             cal: {i: (e, 0) for i, e in items.items()} for cal, items in seed().items()
         }
         self.gone = False
+        # user -> resource name -> (person, seq of its last change); a
+        # deleted one is a bare {resourceName, metadata: {deleted}}.
+        self.contacts: dict[str, dict[str, tuple[Item, int]]] = {
+            user: {p["resourceName"]: (p, 0) for p in found}
+            for user, found in contacts_seed().items()
+        }
+        self.contacts_expired = False
         self.requests: list[tuple[str, dict[str, str]]] = []
 
     # Control, from a test in this process or over POST /_control.
@@ -133,6 +258,36 @@ class Fake:
             elif op == "forget_refresh":
                 self.refresh_tokens.clear()
                 self.access_tokens.clear()
+            elif op == "contact_put":
+                self.seq += 1
+                person = args["person"]
+                book = self.contacts[args.get("user", "carl")]
+                book[person["resourceName"]] = (person, self.seq)
+            elif op == "contact_delete":
+                self.seq += 1
+                book = self.contacts[args.get("user", "carl")]
+                name = args["resourceName"]
+                book[name] = (
+                    {"resourceName": name, "metadata": {"deleted": True}},
+                    self.seq,
+                )
+            elif op == "contact_rename":
+                # Google linked the contact to a profile: a new resource name.
+                self.seq += 1
+                book = self.contacts[args.get("user", "carl")]
+                old, new = args["from"], args["to"]
+                person, _ = book.pop(old)
+                meta = {**person.get("metadata", {}), "previousResourceNames": [old]}
+                book[new] = (
+                    {**person, "resourceName": new, "metadata": meta},
+                    self.seq,
+                )
+            elif op == "contacts_expire":
+                self.contacts_expired = True
+            elif op == "as":
+                self.user = args["user"]
+            elif op == "refuse":
+                self.refused = set(args["scopes"])
             elif op != "state":
                 raise ValueError(op)
             return {
@@ -140,16 +295,18 @@ class Fake:
                 "refresh_grants": self.refresh_grants,
                 "requests": list(self.requests),
                 "refresh_tokens": sorted(self.refresh_tokens),
+                "authorize": list(self.authorize_queries),
             }
 
     # The endpoints.
 
     def authorize(self, q: dict[str, str]) -> tuple[int, dict[str, str], Item]:
+        asked = set(q.get("scope", "").split())
         if (
             q.get("client_id") != self.client_id
             or q.get("response_type") != "code"
             or q.get("code_challenge_method") != "S256"
-            or q.get("scope") != SCOPE
+            or not {"openid", "email"} <= asked
             or q.get("access_type") != "offline"
             or not q.get("code_challenge")
             or not q.get("state")
@@ -157,19 +314,29 @@ class Fake:
             return 400, {}, {"error": "invalid_request"}
         code = secrets.token_urlsafe(16)
         with self.lock:
-            self.codes[code] = (q["code_challenge"], q["redirect_uri"])
+            self.authorize_queries.append(q)
+            user = self.user
+            if q.get("include_granted_scopes") == "true":
+                asked |= {
+                    s
+                    for g in self.refresh_tokens.values()
+                    if g.user == user
+                    for s in g.scopes
+                }
+            grant = Grant(user, frozenset(asked - self.refused))
+            self.codes[code] = (q["code_challenge"], q["redirect_uri"], grant)
         location = (
             q["redirect_uri"] + "?" + urlencode({"state": q["state"], "code": code})
         )
         return 302, {"location": location}, {}
 
-    def _grant(self, refresh: str | None) -> Item:
+    def _grant(self, grant: Grant, refresh: str | None) -> Item:
         access = "ya29." + secrets.token_urlsafe(16)
-        self.access_tokens.add(access)
+        self.access_tokens[access] = grant
         answer: Item = {
             "access_token": access,
             "expires_in": 3599,
-            "scope": SCOPE,
+            "scope": " ".join(sorted(grant.scopes)),
             "token_type": "Bearer",
         }
         if refresh is not None:
@@ -187,7 +354,7 @@ class Fake:
                 found = self.codes.pop(form.get("code", ""), None)
                 if found is None:
                     return 400, {"error": "invalid_grant"}
-                challenge, redirect = found
+                challenge, redirect, grant = found
                 digest = hashlib.sha256(form.get("code_verifier", "").encode()).digest()
                 if (
                     base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != challenge
@@ -195,50 +362,51 @@ class Fake:
                 ):
                     return 400, {"error": "invalid_grant"}
                 refresh = "1//" + secrets.token_urlsafe(24)
-                self.refresh_tokens.add(refresh)
-                return 200, self._grant(refresh)
+                self.refresh_tokens[refresh] = grant
+                return 200, self._grant(grant, refresh)
             if form.get("grant_type") == "refresh_token":
-                if form.get("refresh_token") not in self.refresh_tokens:
+                found_grant = self.refresh_tokens.get(form.get("refresh_token", ""))
+                if found_grant is None:
                     return 400, {"error": "invalid_grant"}
                 self.refresh_grants += 1
-                return 200, self._grant(None)
+                return 200, self._grant(found_grant, None)
         return 400, {"error": "unsupported_grant_type"}
 
     def revoke(self, form: dict[str, str]) -> tuple[int, Item]:
         token = form.get("token", "")
         with self.lock:
             self.revoked.append(token)
-            if token not in self.refresh_tokens:
+            grant = self.refresh_tokens.get(token) or self.access_tokens.get(token)
+            if grant is None:
                 return 400, {"error": "invalid_token"}
-            self.refresh_tokens.discard(token)
-            self.access_tokens.clear()
+            for tokens in (self.refresh_tokens, self.access_tokens):
+                for t in [t for t, g in tokens.items() if g.user == grant.user]:
+                    del tokens[t]
         return 200, {}
+
+    def userinfo(self, bearer: str) -> tuple[int, Item]:
+        with self.lock:
+            grant = self.access_tokens.get(bearer)
+        if grant is None:
+            return 401, {"error": "invalid_token"}
+        return 200, {"sub": f"sub-{grant.user}", "email": USERS[grant.user]}
 
     def api(self, path: str, q: dict[str, str], bearer: str) -> tuple[int, Item]:
         with self.lock:
             self.requests.append((path, q))
-            if bearer not in self.access_tokens:
+            grant = self.access_tokens.get(bearer)
+            if grant is None:
                 return 401, {"error": {"code": 401}}
+            if path.startswith("/calendar/") and SCOPE not in grant.scopes:
+                return 403, {"error": {"code": 403, "status": "PERMISSION_DENIED"}}
+            if path.startswith("/v1/"):
+                return self._connections(path, q, grant)
             if path == "/calendar/v3/users/me/calendarList":
-                items = [
-                    {
-                        "id": PRIMARY,
-                        "summary": PRIMARY,
-                        "primary": True,
-                        "backgroundColor": "#9fe1e7",
-                        "timeZone": "Europe/Stockholm",
-                    },
-                    {
-                        "id": TEAM,
-                        "summary": "Team",
-                        "backgroundColor": "#f83a22",
-                        "timeZone": "UTC",
-                    },
-                ]
-                return 200, self._page(items, q, None)
+                return 200, self._page(CALENDARS[grant.user], q, None)
             prefix, _, rest = path.partition("/calendar/v3/calendars/")
             cal = unquote(rest.removesuffix("/events"))
-            if prefix or not rest.endswith("/events") or cal not in self.events:
+            mine = {c["id"] for c in CALENDARS[grant.user]}
+            if prefix or not rest.endswith("/events") or cal not in mine:
                 return 404, {"error": {"code": 404}}
             if q.get("singleEvents") != "true":
                 return 400, {"error": {"message": "the fake expands only singleEvents"}}
@@ -259,11 +427,44 @@ class Fake:
             ]
             return 200, self._page(live, q, f"seq-{self.seq}")
 
+    def _connections(
+        self, path: str, q: dict[str, str], grant: Grant
+    ) -> tuple[int, Item]:
+        if CONTACTS_SCOPE not in grant.scopes:
+            return 403, {"error": {"code": 403, "status": "PERMISSION_DENIED"}}
+        if path != "/v1/people/me/connections" or not q.get("personFields"):
+            return 400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}}
+        book = self.contacts[grant.user]
+        sync = f"seq-{self.seq}" if q.get("requestSyncToken") == "true" else None
+        if "syncToken" in q:
+            if self.contacts_expired:
+                self.contacts_expired = False
+                return 410, {
+                    "error": {
+                        "code": 410,
+                        "status": "ABORTED",
+                        "details": [{"reason": "EXPIRED_SYNC_TOKEN"}],
+                    }
+                }
+            since = int(q["syncToken"].removeprefix("seq-"))
+            changed = [p for p, s in book.values() if s > since]
+            return 200, self._page(
+                changed, q, sync, key="connections", size_param="pageSize"
+            )
+        live = [p for p, _ in book.values() if not p.get("metadata", {}).get("deleted")]
+        return 200, self._page(live, q, sync, key="connections", size_param="pageSize")
+
     @staticmethod
-    def _page(items: list[Item], q: dict[str, str], sync: str | None) -> Item:
+    def _page(
+        items: list[Item],
+        q: dict[str, str],
+        sync: str | None,
+        key: str = "items",
+        size_param: str = "maxResults",
+    ) -> Item:
         start = int(q.get("pageToken", "0"))
-        size = min(PAGE, int(q.get("maxResults", "250")))
-        answer: Item = {"items": items[start : start + size]}
+        size = min(PAGE, int(q.get(size_param, "250")))
+        answer: Item = {key: items[start : start + size]}
         if start + size < len(items):
             answer["nextPageToken"] = str(start + size)
         elif sync is not None:
@@ -318,6 +519,9 @@ def handler(fake: Fake) -> type[BaseHTTPRequestHandler]:
                 self._send(code, body, headers)
                 return
             bearer = self.headers.get("authorization", "").removeprefix("Bearer ")
+            if path == "/userinfo":
+                self._send(*fake.userinfo(bearer))
+                return
             self._send(*fake.api(path, self._query(), bearer))
 
         def do_POST(self) -> None:
@@ -341,7 +545,9 @@ def endpoints(base: str) -> dict[str, str]:
         "authorize": base + "/o/oauth2/v2/auth",
         "token": base + "/token",
         "revoke": base + "/revoke",
+        "userinfo": base + "/userinfo",
         "calendar": base + "/calendar/v3",
+        "people": base + "/v1",
     }
 
 

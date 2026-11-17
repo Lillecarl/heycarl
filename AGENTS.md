@@ -21,6 +21,7 @@ Architecture: DESIGN.md. This file: frontend conventions. Standard HTML, ARIA an
 - The shell imports the same `base.css`.
 - Another plugin's entry inline: `<Embed scope table key />` from `@heycarl/sdk/Embed.svelte`, next to the entry's link. Never name another plugin's element.
 - An embed element (manifest `frontend.embeds`) takes `key` as an object property (`props: { key: { type: 'Object' } }`) and renders nothing for a gone entry.
+- Google data: manifest `google.scopes`, then `<GoogleAccounts plugin="x" bind:accounts>` from `@heycarl/sdk/GoogleAccounts.svelte` for connect, grant and disconnect. Never a plugin's own OAuth.
 
 ## Routing
 

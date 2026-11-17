@@ -4,9 +4,9 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Annotated, Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 MANIFEST_NAME: Final = "heycarl-plugin.json"
 SCHEMA_PREFIX: Final = "heycarl_plugin_"
@@ -27,15 +27,31 @@ class Frontend(BaseModel):
     embeds: dict[str, str] = {}
 
 
+GoogleScope = Annotated[
+    str, StringConstraints(pattern=r"^https://www\.googleapis\.com/auth/[a-z0-9._/-]+$")
+]
+
+
+class Google(BaseModel):
+    """The plugin reads Google APIs through the kernel's Google accounts."""
+
+    model_config = ConfigDict(extra="forbid")
+    scopes: list[GoogleScope] = Field(min_length=1)
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     contract: int = Field(ge=1, le=1)
     name: str = Field(pattern=NAME_PATTERN)
     title: str
+    # Plugins whose schema this one's migrations use; the kernel migrates
+    # them first.
+    requires: list[str] = []
     migrations: str | None = None
     # Python module path with `register(ctx)`.
     backend: str | None = None
     frontend: Frontend | None = None
+    google: Google | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +88,38 @@ def load_plugins(plugins_file: Path | None) -> list[Plugin]:
     duplicates = {n for n in names if names.count(n) > 1}
     if duplicates:
         raise RuntimeError(f"duplicate plugin names: {sorted(duplicates)}")
-    return plugins
+    return in_requires_order(plugins)
+
+
+def in_requires_order(plugins: list[Plugin]) -> list[Plugin]:
+    """Each plugin after the ones it requires, else in the set's order.
+    Migrations run in this order, so a plugin's may use a required schema."""
+    by_name = {p.name: p for p in plugins}
+    for plugin in plugins:
+        missing = [r for r in plugin.manifest.requires if r not in by_name]
+        if missing:
+            raise RuntimeError(
+                f"plugin {plugin.name} requires {missing}, not installed"
+            )
+    ordered: list[Plugin] = []
+    done: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit(plugin: Plugin) -> None:
+        if plugin.name in done:
+            return
+        if plugin.name in visiting:
+            raise RuntimeError(f"plugins require each other: {sorted(visiting)}")
+        visiting.add(plugin.name)
+        for name in plugin.manifest.requires:
+            visit(by_name[name])
+        visiting.discard(plugin.name)
+        done.add(plugin.name)
+        ordered.append(plugin)
+
+    for plugin in plugins:
+        visit(plugin)
+    return ordered
 
 
 def is_valid_name(name: str) -> bool:

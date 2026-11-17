@@ -2,21 +2,21 @@
 
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import { api, data, json } from '@heycarl/sdk';
+	import { api, data, json, type GoogleAccount } from '@heycarl/sdk';
 	import ErrorNotice from '@heycarl/sdk/ErrorNotice.svelte';
+	import GoogleAccounts from '@heycarl/sdk/GoogleAccounts.svelte';
 	import { withBase } from '@heycarl/sdk/base';
 	import { hashHref, hashId } from '@heycarl/sdk/route';
 	import Related from '@heycarl/sdk/Related.svelte';
 
-	interface Account {
-		google_account: string;
-		connected_at: string;
+	interface Status {
+		id: number;
 		last_sync_at: string | null;
 		last_error: string | null;
-		needs_reconnect: boolean;
 	}
 	interface Cal {
 		id: number;
+		account_id: number;
 		name: string;
 		color: string;
 		is_primary: boolean;
@@ -48,14 +48,13 @@
 	const PLUGIN = '/api/plugins/calendar';
 	const DAYS = 30;
 
-	let configured = $state<boolean | null>(null);
-	let account = $state<Account | null>(null);
+	let accounts = $state<GoogleAccount[] | null>(null);
+	let statuses = $state<Status[]>([]);
 	let calendars = $state<Cal[]>([]);
 	// null until the first answer, so "Nothing in the next days" never shows early.
 	let events = $state<Ev[] | null>(null);
 	let error = $state<unknown>(null);
 	let busy = $state(false);
-	let leaving = $state(false);
 	let open = $derived(hashId('event'));
 	let detail = $state<Ev | null>(null);
 	let people = $state<Person[]>([]);
@@ -77,15 +76,13 @@
 		return [...out.entries()];
 	}
 
+	const statusOf = (id: number) => statuses.find((s) => s.id === id);
+
 	async function load(): Promise<void> {
-		const status = await api<{ configured: boolean }>(`${PLUGIN}/status`);
-		configured = status.configured;
-		const [a, c] = await Promise.all([
-			data<Account[]>(SCOPE, 'account'),
+		[statuses, calendars] = await Promise.all([
+			data<Status[]>(SCOPE, 'account?select=id,last_sync_at,last_error'),
 			data<Cal[]>(SCOPE, 'calendar?order=is_primary.desc,name')
 		]);
-		account = a[0] ?? null;
-		calendars = c;
 		const now = new Date();
 		const until = new Date(now.getTime() + DAYS * 86_400_000);
 		events = await data<Ev[]>(
@@ -122,32 +119,12 @@
 		busy = false;
 	}
 
-	async function connect(): Promise<void> {
-		try {
-			const { url } = await api<{ url: string }>(`${PLUGIN}/connect`, { method: 'POST' });
-			location.href = url;
-		} catch (e) {
-			error = e;
-		}
-	}
-
 	function syncNow(): void {
 		run(async () => {
 			const r = await api<{ ok: boolean; error: string | null }>(`${PLUGIN}/sync`, {
 				method: 'POST'
 			});
 			if (!r.ok && r.error) throw new Error(r.error);
-		});
-	}
-
-	function disconnect(): void {
-		leaving = false;
-		run(async () => {
-			const r = await api<{ revoked: boolean }>(`${PLUGIN}/disconnect`, { method: 'POST' });
-			if (!r.revoked)
-				throw new Error(
-					'Disconnected here, but Google did not confirm. Remove Hey Carl in your Google account.'
-				);
 		});
 	}
 
@@ -188,60 +165,50 @@
 
 <ErrorNotice {error} />
 
-{#if configured === false}
-	<p class="muted">
-		Google Calendar is not configured on this Hey Carl. The person who runs it sets a Google client
-		in the NixOS module.
-	</p>
-{:else if configured && !account}
-	<section class="connect">
+<section class="status">
+	{#if accounts?.length === 0}
 		<p>Bring your Google calendars into Hey Carl. Hey Carl reads them and never changes them.</p>
-		<button class="primary" onclick={connect}>Connect Google Calendar</button>
-	</section>
-{:else if account}
-	<section class="status">
-		<p>
-			<strong>{account.google_account || 'Google'}</strong>
-			<span class="muted">
-				{#if account.last_sync_at}synced {stamp(account.last_sync_at)}{:else}not synced yet{/if}
-			</span>
-		</p>
-		{#if account.needs_reconnect}
-			<p class="error">Google no longer accepts this connection.</p>
-			<button class="primary" onclick={connect}>Connect again</button>
-		{:else if account.last_error}
-			<p class="error">The last sync failed: {account.last_error}</p>
-		{/if}
+	{/if}
+	<GoogleAccounts plugin={SCOPE} bind:accounts onchange={() => run(async () => {})}>
+		{#snippet detail(a, granted)}
+			{@const status = statusOf(a.id)}
+			{#if granted}
+				<p class="muted">
+					{#if status?.last_sync_at}synced {stamp(status.last_sync_at)}{:else}not synced yet{/if}
+				</p>
+				{#if status?.last_error && !a.needs_reconnect}
+					<p class="error">The last sync failed: {status.last_error}</p>
+				{/if}
+				<details>
+					<summary>Calendars</summary>
+					<ul class="plain calendars">
+						{#each calendars.filter((c) => c.account_id === a.id) as c (c.id)}
+							<li>
+								<label>
+									<input
+										type="checkbox"
+										checked={c.selected}
+										disabled={busy}
+										onchange={(e) => choose(c, e.currentTarget.checked)}
+									/>
+									<span class="dot" style:background={c.color || 'var(--hc-muted)'}></span>
+									{c.name}
+								</label>
+							</li>
+						{/each}
+					</ul>
+				</details>
+			{/if}
+		{/snippet}
+	</GoogleAccounts>
+	{#if accounts?.length}
 		<div class="actions">
 			<button disabled={busy} onclick={syncNow}>Sync now</button>
-			{#if leaving}
-				<button class="danger" onclick={disconnect}>Disconnect Google Calendar</button>
-				<button onclick={() => (leaving = false)}>Keep</button>
-			{:else}
-				<button onclick={() => (leaving = true)}>Disconnect</button>
-			{/if}
 		</div>
-		<details>
-			<summary>Calendars</summary>
-			<ul class="plain calendars">
-				{#each calendars as c (c.id)}
-					<li>
-						<label>
-							<input
-								type="checkbox"
-								checked={c.selected}
-								disabled={busy}
-								onchange={(e) => choose(c, e.currentTarget.checked)}
-							/>
-							<span class="dot" style:background={c.color || 'var(--hc-muted)'}></span>
-							{c.name}
-						</label>
-					</li>
-				{/each}
-			</ul>
-		</details>
-	</section>
+	{/if}
+</section>
 
+{#if accounts?.length}
 	{#if events === null}
 		<p class="muted">Loading…</p>
 	{:else if days.length}
@@ -297,8 +264,7 @@
 {/if}
 
 <style>
-	.status,
-	.connect {
+	.status {
 		display: grid;
 		gap: 0.5rem;
 		margin-bottom: 1rem;

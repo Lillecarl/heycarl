@@ -174,10 +174,12 @@ in
         default = null;
         example = "1234-abc.apps.googleusercontent.com";
         description = ''
-          A Google OAuth client ("Web application") for the calendar plugin,
-          which reads calendars with the calendar.readonly scope. Null turns
-          the feature off. Register the redirect URI
-          `<publicUrl>/api/plugins/calendar/callback` at the client.
+          A Google OAuth client ("Web application") for the kernel's Google
+          accounts. A connect asks for `openid email` and the scopes of every
+          plugin that names some, such as calendar.readonly. Enable each
+          plugin's API in the client's Google Cloud project. Null turns the
+          feature off. Register the redirect URI
+          `<publicUrl>/api/google/callback` at the client.
         '';
       };
       clientSecretFile = lib.mkOption {
@@ -206,7 +208,8 @@ in
         internal = true;
         description = ''
           Google's endpoints replaced, by name (authorize, token, revoke,
-          calendar), for the VM test's fake Google only.
+          userinfo, or a Google API's name such as calendar), for the VM
+          test's fake Google only.
         '';
       };
     };

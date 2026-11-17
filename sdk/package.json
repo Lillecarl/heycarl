@@ -11,6 +11,7 @@
     "./position": "./src/position.ts",
     "./Embed.svelte": "./src/Embed.svelte",
     "./ErrorNotice.svelte": "./src/ErrorNotice.svelte",
+    "./GoogleAccounts.svelte": "./src/GoogleAccounts.svelte",
     "./Related.svelte": "./src/Related.svelte",
     "./TagChips.svelte": "./src/TagChips.svelte"
   }

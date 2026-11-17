@@ -4,6 +4,7 @@
   "title": "Calendar",
   "migrations": "migrations",
   "backend": "heycarl_plugin_calendar",
+  "google": { "scopes": ["https://www.googleapis.com/auth/calendar.readonly"] },
   "frontend": {
     "directory": "frontend/dist",
     "module": "index.js",

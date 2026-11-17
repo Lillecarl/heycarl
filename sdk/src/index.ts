@@ -82,6 +82,44 @@ export async function pluginPages(): Promise<Record<string, string>> {
 	);
 }
 
+/** A connected Google account (DESIGN.md "Google accounts"). */
+export interface GoogleAccount {
+	id: number;
+	email: string;
+	scopes: string[];
+	connected_at: string;
+	needs_reconnect: boolean;
+	last_error: string | null;
+}
+
+export interface GoogleStatus {
+	configured: boolean;
+	// Plugin name -> the scopes it needs.
+	plugins: Record<string, string[]>;
+}
+
+export const googleStatus = (): Promise<GoogleStatus> => api<GoogleStatus>('/api/google');
+
+export const googleAccounts = (): Promise<GoogleAccount[]> =>
+	data<GoogleAccount[]>('core', 'google_account?order=id');
+
+/**
+ * Sends the browser to Google's consent, and back to `next` on this site.
+ * With `accountId`: that account again, to renew it or grant more access.
+ */
+export async function connectGoogle(next: string, accountId?: number): Promise<never> {
+	const { url } = await api<{ url: string }>(
+		'/api/google/connect',
+		json('POST', { next, account_id: accountId ?? null })
+	);
+	location.href = url;
+	// The page unloads; nothing after this runs.
+	return new Promise<never>(() => {});
+}
+
+export const disconnectGoogle = (accountId: number): Promise<{ revoked: boolean }> =>
+	api<{ revoked: boolean }>(`/api/google/accounts/${accountId}/disconnect`, { method: 'POST' });
+
 /**
  * The element that shows an entry of `scope`/`table` inline, or null: none
  * declared, or its plugin's module did not load.

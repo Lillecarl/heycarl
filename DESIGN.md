@@ -236,57 +236,88 @@ Decided:
 - SL down or unreadable: 502 with a message for the person.
 - `HEYCARL_SL_URL` replaces SL's address, for tests only.
 
+## Google accounts
+
+The kernel owns every Google grant. A plugin names the scopes it needs, and
+gets an access token for an account from the kernel. One person may connect
+several Google accounts. Each account is one grant, with its own sealed
+refresh token.
+
+- Why the kernel: Google's revoke ends every scope that a Google user gave
+  this OAuth client. Two plugins with grants of their own would disconnect
+  each other.
+- Off by default. The module options `services.heycarl.google.clientId`,
+  `clientSecretFile` and `tokenKeyFile` turn it on, all three together.
+- The redirect URI to register at the Google client is
+  `<publicUrl>/api/google/callback`.
+- Manifest: `"google": {"scopes": [...]}`. Every scope starts with
+  `https://www.googleapis.com/auth/`. A connect asks for `openid email`
+  and the union of the scopes of every installed plugin, with
+  `include_granted_scopes=true`. Google lets the person refuse a scope,
+  so the kernel stores the scopes Google granted. A plugin uses an
+  account only when that account holds all of the plugin's scopes. The
+  page offers "Grant access" (a connect with `login_hint`) otherwise.
+- Identity: the kernel reads `sub` and `email` from Google's userinfo
+  endpoint with the new access token. An account is unique per
+  `(owner_sub, google_sub)`, so connecting the same Google account again
+  replaces its token and keeps its data.
+- The connect flow is the calendar's flow from before: authorization code
+  with PKCE (S256), `access_type=offline`, `prompt=consent select_account`.
+  The state and the verifier stay in kernel memory for 10 minutes, bound
+  to the person and to the hash of their session cookie. The callback is a
+  session route, uses the state once, and redirects to the `next` path the
+  connect named (a same-site path only).
+- Disconnect revokes the account's refresh token at Google, then deletes
+  the account whatever Google answered. Plugin rows reference
+  `heycarl_private.google_account (id, owner_sub)` with `on delete
+  cascade`, so the plugins' copies go with it.
+- Tables: `heycarl_private.google_account` (owner, Google sub and email,
+  granted scopes, `needs_reconnect`, `last_error`) and
+  `heycarl_private.google_token` (sealed refresh token). RLS lets a
+  person SELECT their own accounts, without the token, through
+  `heycarl.google_account`. `google_token` has no grant for any API role.
+  The kernel writes both through SECURITY DEFINER functions in the API
+  schema, which only `heycarl_worker` may run. Each one takes the owner.
+- Sealing: AES-GCM under a key derived from `tokenKeyFile`, with the owner
+  as associated data. A sealed token copied to another owner does not
+  open. One owner's tokens can open in another account row of the same
+  owner. That gives the owner nothing that they do not already have.
+- Plugin API (`ctx.google`, None when off): `accounts(scopes)` lists the
+  accounts to sync, `session(account)` gives an HTTP helper that adds a
+  fresh access token, refreshes once on a 401, and marks the account
+  `needs_reconnect` when Google refuses the refresh token.
+  `on_connect(fn)` wakes a plugin's job after a connect. Access tokens
+  live only in kernel memory, per account.
+
 ## Calendar
 
 Google Calendar into Hey Carl, one way and read-only. The only scope is
 `https://www.googleapis.com/auth/calendar.readonly`. Hey Carl never asks
 for a write scope.
 
-- Off by default. The module options `services.heycarl.google.clientId`,
-  `clientSecretFile` and `tokenKeyFile` turn it on, all three together.
-  Without them the page says "not configured", the tools find an empty
-  cache, and no job runs.
-- The redirect URI to register at the Google client is
-  `<publicUrl>/api/plugins/calendar/callback`, for hey.lillecarl.com
-  `https://hey.lillecarl.com/api/plugins/calendar/callback`.
-- Connect: the page POSTs `/api/plugins/calendar/connect` and gets
-  Google's URL. That is the authorization code flow with PKCE (S256),
-  `access_type=offline` and `prompt=consent`. The random `state` and the
-  verifier stay in kernel memory for 10 minutes, bound to the person and
-  to the hash of their session cookie. A restart drops a connect in
-  progress, and the person starts again.
-- The callback is a session route, so the gate refuses it without a
-  session. Google's redirect is a top-level GET, which carries the
-  SameSite=Lax cookie. The callback uses the state once and refuses it
-  when the person or the session differs from the one that started. It
-  also refuses a grant without the scope or without a refresh token.
-- Disconnect revokes the refresh token at Google, then deletes the token,
-  the calendars and the events, whatever Google answered. The answer says
-  whether Google confirmed.
-- Tables, in `heycarl_plugin_calendar`: `account` (status, last sync and
-  error), `calendar` (Google id, name, color, zone, selected),
-  `calendar_sync` (sync token and window) and `event`. RLS is owner-only
-  with the composite key, as in counters. `heycarl_user` may SELECT
-  `account`, `calendar`, `event` and the `agenda` view, and nothing else.
-  It cannot write anything. `calendar_sync` has no grant.
+- The grant is the kernel's (see "Google accounts"). Each connected
+  account that granted the scope has its own calendars. Without a Google
+  client the page says "not configured", the tools find an empty cache,
+  and no job runs.
+- Migration 0002 moved each person's grant from the plugin's own token
+  table into `heycarl_private.google_account`, sealed token unchanged.
+- Tables, in `heycarl_plugin_calendar`: `sync_status` (last sync and
+  error, per account), `calendar` (account, Google id, name, color, zone,
+  selected), `calendar_sync` (sync token and window) and `event`. The
+  `account` view joins the person's Google accounts to their status.
+  RLS is owner-only with the composite key, as in counters.
+  `heycarl_user` may SELECT `account`, `sync_status`, `calendar`, `event`
+  and the `agenda` view, and nothing else. It cannot write anything.
+  `calendar_sync` has no grant.
 - Every write goes through SECURITY DEFINER functions that only
   `heycarl_worker` may run, and each takes the owner as an argument, as
   `dav_authenticate` does for the gate. The person's own actions (choose
-  a calendar, sync now, disconnect) go to kernel routes, which call those
-  functions with the session's `sub`.
-- The refresh token lives in `heycarl_private.calendar_google_token`,
-  which no API role can reach. The kernel seals it with AES-GCM before
-  storing it, under a key derived from `tokenKeyFile` (a LoadCredential).
-  The owner is the associated data, so a sealed token copied to another
-  row does not open. The key never reaches PostgreSQL. pgcrypto would put
-  it in every SQL call, where a statement log could catch it. A dump
-  alone holds no usable token. Access tokens live only in kernel memory.
-  The client secret is read from its credential file, and no log line
-  carries a token.
+  a calendar, sync now) go to kernel routes, which call those functions
+  with the session's `sub`.
 - Sync: a job every 10 minutes, woken early by a connect or a newly
   chosen calendar, plus "sync now" (the page, and MCP `calendar_sync`),
-  at most once per 10 seconds per person. One lock per person serializes
-  sync, connect, choose and disconnect.
+  at most once per 10 seconds per person. The kernel's lock per account
+  serializes sync, choose and disconnect.
 - The window is 30 days back to 365 days ahead. A full sync lists that
   window with `singleEvents=true`, so recurring events arrive as their
   instances. It keeps the `nextSyncToken` from the last page. A later
