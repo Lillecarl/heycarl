@@ -132,7 +132,11 @@
 		event.preventDefault();
 		const wanted = body(draft);
 		run(async () => {
-			const [made] = await data<Place[]>(SCOPE, 'place', json('POST', wanted));
+			const [made] = await data<Place[]>(
+				SCOPE,
+				'place',
+				json('POST', wanted, 'return=representation')
+			);
 			draft = blank();
 			await load();
 			location.hash = hashHref('place', made.id);
