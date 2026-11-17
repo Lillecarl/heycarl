@@ -65,16 +65,12 @@
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		margin-left: auto;
 		color: var(--hc-muted);
 		white-space: nowrap;
 	}
 	select {
 		color: var(--hc-fg);
 		max-width: 12rem;
-	}
-	.problem {
-		white-space: nowrap;
 	}
 	.problem > :global(p) {
 		margin: 0;
