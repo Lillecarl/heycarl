@@ -113,7 +113,7 @@
 		{:else}
 			{#each stops as s (s.id)}
 				<article aria-labelledby="stop-{s.id}">
-					<h3 id="stop-{s.id}"><a href={hashHref('stop', s.id)}>{s.name}</a></h3>
+					<h3 id="stop-{s.id}"><a class="row-link" href={hashHref('stop', s.id)}>{s.name}</a></h3>
 					<Board siteId={s.site_id} filter={s} limit={4} />
 				</article>
 			{/each}

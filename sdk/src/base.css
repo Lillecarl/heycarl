@@ -112,6 +112,15 @@
 		color: var(--hc-error);
 	}
 
+	/* A link that fills its row at the touch target, such as an item's name
+	   in a heading. Text alone is about 1.2rem tall: too small for a finger. */
+	.row-link {
+		display: flex;
+		align-items: center;
+		min-height: 3rem;
+		touch-action: manipulation;
+	}
+
 	/* A button that shows one glyph: no frame, the full touch target. */
 	.icon {
 		padding: 0;

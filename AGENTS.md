@@ -17,7 +17,7 @@ Architecture: DESIGN.md. This file: frontend conventions. Standard HTML, ARIA an
 
 - `<svelte:options customElement={{ tag: 'heycarl-x', extend: withBase }} />`, `withBase` from `@heycarl/sdk/base`. The shadow root adopts `sdk/src/base.css`.
 - Child components keep their own `<style>`: Svelte injects it into the shadow root. No `:global` style sheets in the host component.
-- `base.css` (layer `hc.base`) owns: box-sizing, controls (3rem min height and width, `font-size: max(1rem, 16px)`, `--hc-muted` border, 0.5rem radius), focus ring, h2/h3, `.plain` lists, `.actions` rows, `.primary`, `.danger`, `.icon`, `.muted`, `.error`, `.visually-hidden`. Never copy these into a component; a component's unlayered rules override.
+- `base.css` (layer `hc.base`) owns: box-sizing, controls (3rem min height and width, `font-size: max(1rem, 16px)`, `--hc-muted` border, 0.5rem radius), focus ring, h2/h3, `.plain` lists, `.actions` rows, `.primary`, `.danger`, `.icon`, `.row-link` (a link filling its row at 3rem: every tappable item name in a list heading), `.muted`, `.error`, `.visually-hidden`. Never copy these into a component; a component's unlayered rules override.
 - The shell imports the same `base.css`.
 - Another plugin's entry inline: `<Embed scope table key />` from `@heycarl/sdk/Embed.svelte`, next to the entry's link. Never name another plugin's element.
 - An embed element (manifest `frontend.embeds`) takes `key` as an object property (`props: { key: { type: 'Object' } }`) and renders nothing for a gone entry.

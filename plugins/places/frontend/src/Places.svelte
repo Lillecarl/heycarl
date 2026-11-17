@@ -258,7 +258,7 @@
 				<p>You are not at any of your places.</p>
 			{/if}
 			{#each inside as p (p.id)}
-				<h3><a href={hashHref('place', p.id)}>{p.name}</a></h3>
+				<h3><a class="row-link" href={hashHref('place', p.id)}>{p.name}</a></h3>
 				{#if boundTo(p.id).length}
 					<ul class="plain bound">
 						{#each boundTo(p.id) as b (`${b.entry.scope}/${b.entry.table}/${JSON.stringify(b.entry.key)}`)}
