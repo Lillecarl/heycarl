@@ -4,8 +4,10 @@ readable 502, stops nobody else reaches, and a stop bound to a place."""
 
 from __future__ import annotations
 
+import importlib
 import json
 import threading
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlsplit
@@ -19,7 +21,10 @@ from .test_mcp import Plain, connected, served, tool
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from types import ModuleType
+
     import httpx
+    from fastapi import FastAPI
     from heycarl.config import Config
 
 pytestmark = [pytest.mark.anyio, needs_database]
@@ -152,7 +157,19 @@ async def test_search_and_filter(client: httpx.AsyncClient, fake_sl: list[str]) 
     assert board["notices"] == ["Hissen är ur funktion."]
 
     everything = await get(client, me, f"/sites/{HOGDALEN}/departures")
-    assert len(everything["departures"]) == 5
+    # In time order, though SL sent the bus last.
+    assert [(d["line"], d["destination"]) for d in everything["departures"]] == [
+        (19, "Hagsätra"),
+        (19, "Hässelby strand"),
+        (144, "Gullmarsplan"),
+        (19, "Vällingby"),
+        (19, "Hässelby strand"),
+    ]
+    # A limit keeps the next departure of every line and direction.
+    first = await get(client, me, f"/sites/{HOGDALEN}/departures?limit=1")
+    assert [(d["line"], d["direction"]) for d in first["departures"]] == [(19, 2), (19, 1), (144, 1)]
+    north = await get(client, me, f"/sites/{HOGDALEN}/departures?limit=1&direction=1")
+    assert [d["line"] for d in north["departures"]] == [19, 144]
     buses = await get(client, me, f"/sites/{HOGDALEN}/departures?transport=BUS")
     assert [d["line"] for d in buses["departures"]] == [144]
     # One fetch of the site list and one of the board, while both are fresh.
@@ -167,6 +184,8 @@ async def test_refusals(client: httpx.AsyncClient, fake_sl: list[str]) -> None:
         "/sites/x/departures",
         f"/sites/{HOGDALEN}/departures?direction=3",
         f"/sites/{HOGDALEN}/departures?transport=ROCKET",
+        f"/sites/{HOGDALEN}/departures?limit=0",
+        f"/sites/{HOGDALEN}/departures?limit=31",
         "/sites?q=",
     ):
         r = await client.get(PLUGIN + path, headers=me)
@@ -247,6 +266,48 @@ async def test_a_stop_is_here_and_embeds(client: httpx.AsyncClient) -> None:
     assert departures["frontend"]["embeds"] == {"stop": "heycarl-departures-stop"}
     [places] = [p for p in r.json() if p["name"] == "places"]
     assert places["frontend"]["embeds"] == {}
+
+
+# The plugin's module is importable once the app has loaded the plugins.
+@pytest.fixture
+def sl(app: FastAPI) -> ModuleType:
+    return importlib.import_module("heycarl_plugin_departures.sl")
+
+
+def shown_by(sl: ModuleType, limit: int, *departures: tuple[int, int, int, str]) -> list[tuple[int, int, int]]:
+    start = datetime(2026, 11, 17, 11, 0, tzinfo=sl.ZONE)
+    board = sl.Board(
+        site_id=1,
+        fetched_at=start,
+        notices=[],
+        departures=[
+            sl.Departure(
+                line=line, designation=str(line), transport="METRO", group=None,
+                direction=direction, destination="x", state=state,
+                scheduled=start + timedelta(minutes=minute),
+                expected=start + timedelta(minutes=minute),
+                platform=None, notices=[],
+            )
+            for line, direction, minute, state in departures
+        ],
+    )
+    return [(d.line, d.direction, d.expected.minute) for d in sl.soonest(board, limit).departures]
+
+
+async def test_every_line_and_direction_gets_its_next_departure(sl: ModuleType) -> None:
+    every_line_shown = [(17, 1, 1, "EXPECTED"), (18, 1, 2, "EXPECTED"), (17, 1, 4, "EXPECTED")]
+    assert shown_by(sl, 2, *every_line_shown) == [(17, 1, 1), (18, 1, 2)]
+    assert shown_by(
+        sl, 2,
+        (17, 1, 1, "EXPECTED"), (17, 1, 3, "EXPECTED"), (17, 2, 5, "EXPECTED"),
+        (17, 1, 6, "EXPECTED"), (19, 1, 9, "EXPECTED"), (19, 1, 12, "EXPECTED"),
+    ) == [(17, 1, 1), (17, 1, 3), (17, 2, 5), (19, 1, 9)]
+    # A cancelled departure is not a line's next one, and a line with
+    # nothing that leaves adds nothing.
+    assert shown_by(
+        sl, 1,
+        (17, 1, 1, "CANCELLED"), (18, 1, 2, "EXPECTED"), (17, 1, 4, "EXPECTED"), (19, 1, 5, "CANCELLED"),
+    ) == [(17, 1, 1), (18, 1, 2), (17, 1, 4)]
 
 
 async def test_mcp_tools(served: Plain, fake_sl: list[str]) -> None:

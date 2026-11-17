@@ -37,6 +37,8 @@ SEARCH_LIMIT: Final = 20
 HTTP_TIMEOUT: Final = httpx.Timeout(10.0)
 MAX_SITE_ID: Final = 99_999_999
 MAX_LINES: Final = 20
+MAX_SHOWN: Final = 30
+CANCELLED: Final = "CANCELLED"
 
 
 class Transport(StrEnum):
@@ -160,26 +162,48 @@ def parse_board(site_id: int, body: bytes, fetched_at: datetime) -> Board:
         raw = _RawBoard.model_validate_json(body)
     except ValidationError as e:
         raise SLError("SL sent departures in an unknown shape") from e
+    departures = [
+        Departure(
+            line=d.line.id,
+            designation=d.line.designation or str(d.line.id),
+            transport=d.line.transport_mode,
+            group=d.line.group_of_lines,
+            direction=d.direction_code,
+            destination=d.destination,
+            state=d.state,
+            scheduled=local(d.scheduled),
+            expected=local(d.expected or d.scheduled),
+            platform=d.stop_point.designation if d.stop_point else None,
+            notices=_messages(d.deviations),
+        )
+        for d in raw.departures
+    ]
     return Board(
         site_id=site_id,
         fetched_at=fetched_at,
-        departures=[
-            Departure(
-                line=d.line.id,
-                designation=d.line.designation or str(d.line.id),
-                transport=d.line.transport_mode,
-                group=d.line.group_of_lines,
-                direction=d.direction_code,
-                destination=d.destination,
-                state=d.state,
-                scheduled=local(d.scheduled),
-                expected=local(d.expected or d.scheduled),
-                platform=d.stop_point.designation if d.stop_point else None,
-                notices=_messages(d.deviations),
-            )
-            for d in raw.departures
-        ],
+        # SL orders by its own rules; "the next one" means the soonest.
+        departures=sorted(departures, key=lambda d: d.expected),
         notices=_messages(raw.stop_deviations),
+    )
+
+
+def soonest(board: Board, limit: int) -> Board:
+    """The first `limit` departures, plus the next one of each line and
+    direction they leave out, in time order. A cancelled departure is not
+    a line's next one."""
+    shown = board.departures[:limit]
+    covered = {(d.line, d.direction) for d in shown if d.state != CANCELLED}
+    extra: set[int] = set()
+    for i, d in enumerate(board.departures[limit:], start=limit):
+        if d.state != CANCELLED and (key := (d.line, d.direction)) not in covered:
+            covered.add(key)
+            extra.add(i)
+    return board.model_copy(
+        update={
+            "departures": [
+                d for i, d in enumerate(board.departures) if i < limit or i in extra
+            ]
+        }
     )
 
 

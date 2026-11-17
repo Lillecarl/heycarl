@@ -17,7 +17,7 @@
 	let current = $state<Board | null>(null);
 	let error = $state<unknown>(null);
 	let now = $state(Date.now());
-	let shown = $derived(current?.departures.slice(0, limit) ?? []);
+	let shown = $derived(current?.departures ?? []);
 
 	let generation = 0;
 	async function load(url: string): Promise<void> {
@@ -33,7 +33,7 @@
 	}
 
 	$effect(() => {
-		const url = boardUrl(siteId, filter);
+		const url = boardUrl(siteId, filter, limit);
 		untrack(() => {
 			current = null;
 			load(url);

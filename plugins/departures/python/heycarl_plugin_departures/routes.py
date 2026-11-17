@@ -9,7 +9,18 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import Depends, HTTPException, Path, Query, status
 from heycarl.identity import Caller, caller
 
-from .sl import MAX_LINES, MAX_SITE_ID, Board, Filter, Site, SLError, Transport, select
+from .sl import (
+    MAX_LINES,
+    MAX_SHOWN,
+    MAX_SITE_ID,
+    Board,
+    Filter,
+    Site,
+    SLError,
+    Transport,
+    select,
+    soonest,
+)
 
 if TYPE_CHECKING:
     from fastapi import APIRouter
@@ -41,11 +52,14 @@ def register_routes(router: APIRouter, sl: SL) -> None:
         transport: Transport | None = None,
         line: Annotated[list[int], Query(max_length=MAX_LINES)] = [],  # noqa: B006 -- FastAPI copies it
         direction: Annotated[int | None, Query(ge=1, le=2)] = None,
+        # None is every departure in the hour.
+        limit: Annotated[int | None, Query(ge=1, le=MAX_SHOWN)] = None,
     ) -> Board:
         try:
             board = await sl.board(site_id)
         except SLError as e:
             raise _unavailable(e) from e
-        return select(
+        wanted = select(
             board, Filter(transport=transport, lines=line, direction=direction)
         )
+        return wanted if limit is None else soonest(wanted, limit)

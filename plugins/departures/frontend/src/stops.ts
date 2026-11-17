@@ -60,8 +60,12 @@ export const MODES: Record<string, string> = {
 	TAXI: 'Taxi'
 };
 
-export function boardUrl(siteId: number, filter: Filter): string {
+/** The first `limit` departures, plus the next one of each line and
+ * direction they leave out; the kernel picks them. No limit is every
+ * departure in the hour. */
+export function boardUrl(siteId: number, filter: Filter, limit?: number): string {
 	const query = new URLSearchParams();
+	if (limit !== undefined) query.set('limit', String(limit));
 	if (filter.transport) query.set('transport', filter.transport);
 	for (const line of filter.lines) query.append('line', String(line));
 	if (filter.direction) query.set('direction', String(filter.direction));

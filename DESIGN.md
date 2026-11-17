@@ -224,6 +224,11 @@ Decided:
   as query parameters and reads no rows. The page reads its own stops
   through `/api/data`, as the person, and passes the filter. The MCP tool
   reads stops through `call()`, so RLS applies on both paths.
+- A board is in expected-time order. With a `limit`, it shows the first
+  `limit` departures, plus the next one of each line and direction that
+  they leave out, so a frequent line never hides a rare one. A cancelled
+  departure is not a line's next one. The kernel picks them, so the page
+  and `departures_next` show the same set.
 - The URL to SL is built from an integer site id only, so no caller can
   make the kernel fetch anything else.
 - A site's board is cached for 20 s, at most 200 sites, and concurrent

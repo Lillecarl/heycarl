@@ -18,7 +18,17 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from .routes import register_routes
-from .sl import BASE_URL, SL, ZONE, Filter, SLError, Transport, select
+from .sl import (
+    BASE_URL,
+    MAX_SHOWN,
+    SL,
+    ZONE,
+    Filter,
+    SLError,
+    Transport,
+    select,
+    soonest,
+)
 
 if TYPE_CHECKING:
     from heycarl.app import PluginContext
@@ -27,7 +37,6 @@ SCOPE: Final = "departures"
 READ: Final = ToolAnnotations(readOnlyHint=True)
 WRITE: Final = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 COLUMNS: Final = "id,name,site_id,site_name,transport,lines,direction,created_at"
-NEXT_LIMIT: Final = 30
 # Any: PostgREST rows. A tool never returns Rows bare: MCPServer sends each
 # item of a list as its own text block.
 Row = dict[str, Any]
@@ -156,15 +165,18 @@ def register(ctx: PluginContext) -> None:
         ctx: Context, stop_id: int | None = None, limit: int = 6
     ) -> dict[str, Rows]:
         """The next departures from one saved stop, or from every one, in
-        the next hour. `minutes` counts from now; `notices` are SL's
-        messages, such as a cancellation."""
-        limit = max(1, min(limit, NEXT_LIMIT))
+        the next hour: the first `limit`, plus the next one of each line
+        and direction they leave out. `minutes` counts from now; `notices`
+        are SL's messages, such as a cancellation."""
+        limit = max(1, min(limit, MAX_SHOWN))
         stops = await stop_rows(ctx, stop_id)
         boards: list[Row] = [{} for _ in stops]
 
         async def one(i: int, row: Row) -> None:
             try:
-                board = select(await sl.board(row["site_id"]), stop_filter(row))
+                board = soonest(
+                    select(await sl.board(row["site_id"]), stop_filter(row)), limit
+                )
             except SLError as e:
                 boards[i] = {"stop": row, "error": str(e)}
                 return
@@ -177,7 +189,7 @@ def register(ctx: PluginContext) -> None:
                         **d.model_dump(mode="json"),
                         "minutes": minutes(d.expected, now),
                     }
-                    for d in board.departures[:limit]
+                    for d in board.departures
                 ],
             }
 
